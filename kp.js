@@ -3,11 +3,11 @@
 
     var CONFIG = {
         name: 'KinoPub',
-        version: '1.0.4',
+        version: '1.0.5',
         apiBase: 'https://api.service-kp.com/v1',
         token: '1ksgubh1qkewyq3u4z65bpnwn9eshhn2',
         protocol: 'hls',
-        quality: null
+        quality: 1080
     };
 
     function getToken() {
