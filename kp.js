@@ -3,19 +3,15 @@
 
     var CONFIG = {
         name: 'KinoPub',
-        version: '1.0.2',
+        version: '1.0.4',
         apiBase: 'https://api.service-kp.com/v1',
         token: '1ksgubh1qkewyq3u4z65bpnwn9eshhn2',
-        protocol: 'hls4',
+        protocol: 'hls',
         quality: null
     };
 
     function getToken() {
         return CONFIG.token;
-    }
-
-    function getProtocol() {
-        return CONFIG.protocol;
     }
 
     function apiRequest(path, params) {
@@ -66,27 +62,40 @@
     function extractVideoUrl(files) {
         if (!files || !files.length) return null;
 
-        var protocol = getProtocol();
         var allQualities = {};
-
-        files.forEach(function(file) {
-            var url = file.url && (file.url[protocol] || file.url.hls4 || file.url.hls || file.url.http);
-            if (url) allQualities[file.quality] = url;
-        });
+        var protocols = ['hls', 'hls4', 'http'];
 
         var sorted = files.slice().sort(function(a, b) {
             return (b.quality_id || 0) - (a.quality_id || 0);
         });
 
-        var best = sorted.find(function(f) {
-            return f.url && (f.url[protocol] || f.url.hls4 || f.url.hls || f.url.http);
-        });
+        var bestUrl = null;
+        var bestQuality = null;
 
-        if (!best) return null;
+        for (var i = 0; i < sorted.length; i++) {
+            var file = sorted[i];
+            if (!file.url) continue;
+
+            for (var p = 0; p < protocols.length; p++) {
+                var protocol = protocols[p];
+                if (file.url[protocol]) {
+                    if (!allQualities[file.quality]) {
+                        allQualities[file.quality] = file.url[protocol];
+                    }
+                    if (!bestUrl) {
+                        bestUrl = file.url[protocol];
+                        bestQuality = file.quality;
+                        console.log('KinoPub: Selected', protocol, file.quality);
+                    }
+                }
+            }
+        }
+
+        if (!bestUrl) return null;
 
         return {
-            url: best.url[protocol] || best.url.hls4 || best.url.hls || best.url.http,
-            quality: best.quality,
+            url: bestUrl,
+            quality: bestQuality,
             qualities: allQualities
         };
     }
@@ -156,7 +165,6 @@
         var filterData = { season: [] };
         var currentSeason = 0;
 
-        // Добавляем scroll в Explorer
         files.appendFiles(scroll.render());
 
         this.initialize = function() {
