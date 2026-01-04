@@ -7,7 +7,7 @@
         apiBase: 'https://api.service-kp.com/v1',
         token: '1ksgubh1qkewyq3u4z65bpnwn9eshhn2',
         protocol: 'hls',
-        quality: 1080
+        maxQuality: 1080  // Максимальное качество для браузера
     };
 
     function getToken() {
@@ -59,13 +59,30 @@
         return apiRequest('/items/' + id);
     }
 
+    function parseQuality(qualityStr) {
+        var match = qualityStr.match(/(\d+)/);
+        return match ? parseInt(match[1]) : 0;
+    }
+
     function extractVideoUrl(files) {
         if (!files || !files.length) return null;
 
         var allQualities = {};
-        var protocols = ['hls', 'hls4', 'http'];
+        var protocols = ['hls', 'http', 'hls4'];
 
-        var sorted = files.slice().sort(function(a, b) {
+        // Фильтруем файлы по максимальному качеству
+        var compatibleFiles = files.filter(function(file) {
+            var quality = parseQuality(file.quality || '');
+            return quality <= CONFIG.maxQuality;
+        });
+
+        // Если нет совместимых — берем все
+        if (compatibleFiles.length === 0) {
+            compatibleFiles = files;
+        }
+
+        // Сортируем по качеству (максимальное первым)
+        var sorted = compatibleFiles.slice().sort(function(a, b) {
             return (b.quality_id || 0) - (a.quality_id || 0);
         });
 
@@ -79,14 +96,37 @@
             for (var p = 0; p < protocols.length; p++) {
                 var protocol = protocols[p];
                 if (file.url[protocol]) {
+                    var qualityNum = parseQuality(file.quality || '');
+                    
+                    // Собираем все качества
                     if (!allQualities[file.quality]) {
                         allQualities[file.quality] = file.url[protocol];
                     }
-                    if (!bestUrl) {
+                    
+                    // Выбираем лучший совместимый
+                    if (!bestUrl && qualityNum <= CONFIG.maxQuality) {
                         bestUrl = file.url[protocol];
                         bestQuality = file.quality;
-                        console.log('KinoPub: Selected', protocol, file.quality);
+                        console.log('KinoPub: Selected', protocol, file.quality, '(max:', CONFIG.maxQuality + 'p)');
                     }
+                }
+            }
+        }
+
+        // Fallback — если ничего не выбрали, берем первый доступный
+        if (!bestUrl && sorted.length > 0) {
+            for (var i = 0; i < sorted.length; i++) {
+                var file = sorted[i];
+                if (file.url) {
+                    for (var p = 0; p < protocols.length; p++) {
+                        if (file.url[protocols[p]]) {
+                            bestUrl = file.url[protocols[p]];
+                            bestQuality = file.quality;
+                            console.log('KinoPub: Fallback selected', protocols[p], file.quality);
+                            break;
+                        }
+                    }
+                    if (bestUrl) break;
                 }
             }
         }
@@ -239,8 +279,6 @@
                 scroll.append(html);
             });
 
-            console.log('KinoPub: Items in scroll:', scroll.render().find('.kinopub-item').length);
-
             this.loading(false);
             Lampa.Controller.enable('content');
         };
@@ -298,8 +336,6 @@
                     return f.season === currentSeason;
                 });
             }
-
-            console.log('KinoPub: filtered files:', filtered.length);
 
             filtered.forEach(function(file) {
                 var title = file.title;
@@ -377,7 +413,6 @@
         };
 
         this.showMessage = function(title, subtitle) {
-            console.log('KinoPub: showMessage', title, subtitle);
             scroll.clear();
             var html = $('<div class="online-empty"></div>');
             html.append('<div class="online-empty__title">' + title + '</div>');
@@ -466,17 +501,7 @@
             version: CONFIG.version,
             name: CONFIG.name,
             description: 'KinoPub балансер',
-            component: 'kinopub',
-            onContextMenu: function() { return { name: 'KinoPub', description: '' }; },
-            onContextLauch: function(object) {
-                Lampa.Activity.push({
-                    url: '',
-                    title: 'KinoPub',
-                    component: 'kinopub',
-                    movie: object,
-                    page: 1
-                });
-            }
+            component: 'kinopub'
         };
 
         Lampa.Listener.follow('full', function(e) {
