@@ -1,27 +1,29 @@
+/**
+ * KinoPub Balancer for Lampa
+ * Версия: 2.0.0
+ */
+
 (function() {
     'use strict';
 
+    // ========================================================================
+    // КОНФИГУРАЦИЯ
+    // ========================================================================
+    
     var CONFIG = {
         name: 'KinoPub',
-        version: '1.0.6',
+        version: '2.0.0',
         apiBase: 'https://api.service-kp.com/v1',
         token: '1ksgubh1qkewyq3u4z65bpnwn9eshhn2',
-        protocol: 'http',
-        maxQuality: 1080  // Максимальное качество для браузера
+        protocol: 'hls4'
     };
 
-    function getToken() {
-        return CONFIG.token;
-    }
-
+    // ========================================================================
+    // API
+    // ========================================================================
+    
     function apiRequest(path, params) {
         return new Promise(function(resolve, reject) {
-            var token = getToken();
-            if (!token) {
-                reject({ error: 'no_token' });
-                return;
-            }
-
             var url = CONFIG.apiBase + path;
 
             if (params) {
@@ -31,21 +33,17 @@
                 url += '?' + query;
             }
 
-            console.log('KinoPub API Request:', url);
-
             var network = new Lampa.Reguest();
 
             network.native(url, function(response) {
-                console.log('KinoPub API Response:', response);
                 if (typeof response === 'string') {
                     try { response = JSON.parse(response); } catch(e) {}
                 }
                 resolve(response);
             }, function(err) {
-                console.log('KinoPub API Error:', err);
                 reject(err);
             }, false, {
-                headers: { 'Authorization': 'Bearer ' + token },
+                headers: { 'Authorization': 'Bearer ' + CONFIG.token },
                 timeout: 15000
             });
         });
@@ -59,30 +57,17 @@
         return apiRequest('/items/' + id);
     }
 
-    function parseQuality(qualityStr) {
-        var match = qualityStr.match(/(\d+)/);
-        return match ? parseInt(match[1]) : 0;
-    }
-
+    // ========================================================================
+    // ПАРСИНГ ВИДЕО
+    // ========================================================================
+    
     function extractVideoUrl(files) {
         if (!files || !files.length) return null;
 
         var allQualities = {};
-        var protocols = ['http', 'hls', 'hls4'];
+        var protocols = ['hls4', 'hls', 'http'];
 
-        // Фильтруем файлы по максимальному качеству
-        var compatibleFiles = files.filter(function(file) {
-            var quality = parseQuality(file.quality || '');
-            return quality <= CONFIG.maxQuality;
-        });
-
-        // Если нет совместимых — берем все
-        if (compatibleFiles.length === 0) {
-            compatibleFiles = files;
-        }
-
-        // Сортируем по качеству (максимальное первым)
-        var sorted = compatibleFiles.slice().sort(function(a, b) {
+        var sorted = files.slice().sort(function(a, b) {
             return (b.quality_id || 0) - (a.quality_id || 0);
         });
 
@@ -96,37 +81,13 @@
             for (var p = 0; p < protocols.length; p++) {
                 var protocol = protocols[p];
                 if (file.url[protocol]) {
-                    var qualityNum = parseQuality(file.quality || '');
-                    
-                    // Собираем все качества
                     if (!allQualities[file.quality]) {
                         allQualities[file.quality] = file.url[protocol];
                     }
-                    
-                    // Выбираем лучший совместимый
-                    if (!bestUrl && qualityNum <= CONFIG.maxQuality) {
+                    if (!bestUrl) {
                         bestUrl = file.url[protocol];
                         bestQuality = file.quality;
-                        console.log('KinoPub: Selected', protocol, file.quality, '(max:', CONFIG.maxQuality + 'p)');
                     }
-                }
-            }
-        }
-
-        // Fallback — если ничего не выбрали, берем первый доступный
-        if (!bestUrl && sorted.length > 0) {
-            for (var i = 0; i < sorted.length; i++) {
-                var file = sorted[i];
-                if (file.url) {
-                    for (var p = 0; p < protocols.length; p++) {
-                        if (file.url[protocols[p]]) {
-                            bestUrl = file.url[protocols[p]];
-                            bestQuality = file.quality;
-                            console.log('KinoPub: Fallback selected', protocols[p], file.quality);
-                            break;
-                        }
-                    }
-                    if (bestUrl) break;
                 }
             }
         }
@@ -141,14 +102,12 @@
     }
 
     function buildFileList(item) {
-        console.log('KinoPub buildFileList:', item);
         var files = [];
 
+        // Фильмы
         if (item.videos && item.videos.length) {
-            console.log('KinoPub: Found videos:', item.videos.length);
             item.videos.forEach(function(video) {
                 var extracted = extractVideoUrl(video.files);
-                console.log('KinoPub: Extracted video:', extracted);
                 if (!extracted) return;
 
                 files.push({
@@ -159,14 +118,16 @@
                     subtitles: (video.subtitles || []).map(function(s) {
                         return { label: s.lang, url: s.url };
                     }),
-                    method: 'play',
-                    voice_name: item.voice || ''
+                    voice: item.voice || '',
+                    year: item.year,
+                    duration: item.duration ? formatDuration(item.duration.total) : '',
+                    poster: item.posters ? item.posters.medium : ''
                 });
             });
         }
 
+        // Сериалы
         if (item.seasons && item.seasons.length) {
-            console.log('KinoPub: Found seasons:', item.seasons.length);
             item.seasons.forEach(function(season) {
                 (season.episodes || []).forEach(function(episode) {
                     var extracted = extractVideoUrl(episode.files);
@@ -182,17 +143,31 @@
                         subtitles: (episode.subtitles || []).map(function(s) {
                             return { label: s.lang, url: s.url };
                         }),
-                        method: 'play',
-                        voice_name: item.voice || ''
+                        voice: item.voice || '',
+                        duration: episode.duration ? formatDuration(episode.duration) : '',
+                        poster: episode.thumbnail || (item.posters ? item.posters.medium : '')
                     });
                 });
             });
         }
 
-        console.log('KinoPub: Total files:', files.length);
         return files;
     }
 
+    function formatDuration(seconds) {
+        if (!seconds) return '';
+        var h = Math.floor(seconds / 3600);
+        var m = Math.floor((seconds % 3600) / 60);
+        if (h > 0) {
+            return h + ':' + (m < 10 ? '0' : '') + m;
+        }
+        return m + ' мин';
+    }
+
+    // ========================================================================
+    // КОМПОНЕНТ
+    // ========================================================================
+    
     function KinoPubComponent(object) {
         var network = new Lampa.Reguest();
         var scroll = new Lampa.Scroll({ mask: true, over: true });
@@ -204,70 +179,130 @@
         var videoFiles = [];
         var filterData = { season: [] };
         var currentSeason = 0;
+        var kinopubItem = null;
 
         files.appendFiles(scroll.render());
+        files.appendHead(filter.render());
 
+        // ====================================================================
+        // ИНИЦИАЛИЗАЦИЯ
+        // ====================================================================
+        
         this.initialize = function() {
-            console.log('KinoPub: Initialize');
-            this.loading(true);
-            this.search();
-        };
-
-        this.search = function() {
             var self = this;
+            this.loading(true);
+
             var movie = object.movie;
             var query = movie.title || movie.name || movie.original_title || movie.original_name;
 
-            console.log('KinoPub: Searching for:', query);
-
             searchContent(query).then(function(response) {
-                console.log('KinoPub: Search response:', response);
                 if (response && response.items && response.items.length) {
-                    console.log('KinoPub: Found items:', response.items.length);
-                    var found = self.findBestMatch(response.items, movie);
+                    var items = response.items;
+                    var found = self.findBestMatch(items, movie);
+
                     if (found) {
-                        console.log('KinoPub: Best match:', found);
-                        self.loadItem(found.id);
+                        // Точное совпадение — сразу загружаем и воспроизводим
+                        self.loadAndPlay(found.id);
+                    } else if (items.length === 1) {
+                        // Один результат — сразу воспроизводим
+                        self.loadAndPlay(items[0].id);
                     } else {
-                        console.log('KinoPub: No exact match, showing results');
-                        self.showSearchResults(response.items);
+                        // Несколько результатов — показываем выбор
+                        self.showSearchResults(items);
                     }
                 } else {
-                    console.log('KinoPub: No results');
                     self.showMessage('Ничего не найдено', 'Поиск: ' + query);
                 }
             }).catch(function(err) {
-                console.log('KinoPub: Search error:', err);
                 self.showMessage('Ошибка поиска', err.message || '');
             });
         };
 
+        // ====================================================================
+        // ПОИСК И ЗАГРУЗКА
+        // ====================================================================
+        
         this.findBestMatch = function(items, movie) {
             var year = parseInt((movie.release_date || movie.first_air_date || '0').substring(0, 4));
-            var title = (movie.title || movie.name || '').toLowerCase();
-            var originalTitle = (movie.original_title || movie.original_name || '').toLowerCase();
+            var title = (movie.title || movie.name || '').toLowerCase().trim();
+            var originalTitle = (movie.original_title || movie.original_name || '').toLowerCase().trim();
 
             return items.find(function(item) {
                 var itemTitle = (item.title || '').toLowerCase();
+                // Убираем часть после " / " для сравнения
+                var itemTitleClean = itemTitle.split(' / ')[0].trim();
                 var itemYear = item.year;
+
                 var yearMatch = !year || !itemYear || Math.abs(year - itemYear) <= 1;
-                var titleMatch = itemTitle === title || itemTitle === originalTitle;
+                var titleMatch = itemTitleClean === title || 
+                                 itemTitle === title ||
+                                 itemTitle.indexOf(originalTitle) !== -1 ||
+                                 itemTitleClean === originalTitle;
+
                 return yearMatch && titleMatch;
             });
         };
 
+        this.loadAndPlay = function(id) {
+            var self = this;
+
+            getItem(id).then(function(response) {
+                if (response && response.item) {
+                    kinopubItem = response.item;
+                    videoFiles = buildFileList(response.item);
+
+                    if (videoFiles.length === 1 && !response.item.seasons) {
+                        // Один файл (фильм) — сразу воспроизводим
+                        self.play(videoFiles[0], videoFiles);
+                    } else if (videoFiles.length > 0) {
+                        // Несколько файлов (сериал или несколько версий) — показываем список
+                        self.buildFilters();
+                        self.display();
+                    } else {
+                        self.showMessage('Видео не найдено', '');
+                    }
+                } else {
+                    self.showMessage('Контент не найден', '');
+                }
+            }).catch(function(err) {
+                self.showMessage('Ошибка загрузки', err.message || '');
+            });
+        };
+
+        this.loadItem = function(id) {
+            var self = this;
+            scroll.clear();
+            this.loading(true);
+
+            getItem(id).then(function(response) {
+                if (response && response.item) {
+                    kinopubItem = response.item;
+                    videoFiles = buildFileList(response.item);
+
+                    if (videoFiles.length > 0) {
+                        self.buildFilters();
+                        self.display();
+                    } else {
+                        self.showMessage('Видео не найдено', '');
+                    }
+                } else {
+                    self.showMessage('Контент не найден', '');
+                }
+            }).catch(function(err) {
+                self.showMessage('Ошибка загрузки', err.message || '');
+            });
+        };
+
+        // ====================================================================
+        // ОТОБРАЖЕНИЕ
+        // ====================================================================
+        
         this.showSearchResults = function(items) {
             var self = this;
-            console.log('KinoPub: showSearchResults', items.length);
-            
             scroll.clear();
 
-            items.slice(0, 10).forEach(function(item, index) {
-                console.log('KinoPub: Adding item', index, item.title);
-                
-                var html = $('<div class="selector kinopub-item"></div>');
-                html.append('<div class="kinopub-item__title">' + item.title + '</div>');
-                html.append('<div class="kinopub-item__info">' + (item.year || '') + ' • ' + (item.type || '') + '</div>');
+            items.forEach(function(item) {
+                var html = self.createSearchCard(item);
 
                 html.on('hover:enter', function() {
                     self.loadItem(item.id);
@@ -283,51 +318,38 @@
             Lampa.Controller.enable('content');
         };
 
-        this.loadItem = function(id) {
-            var self = this;
-            console.log('KinoPub: loadItem', id);
-            scroll.clear();
+        this.createSearchCard = function(item) {
+            var poster = item.posters ? item.posters.small : '';
+            var year = item.year || '';
+            var type = item.type === 'serial' ? 'Сериал' : 'Фильм';
 
-            getItem(id).then(function(response) {
-                console.log('KinoPub: Item response:', response);
-                if (response && response.item) {
-                    videoFiles = buildFileList(response.item);
-                    if (videoFiles.length) {
-                        self.buildFilters();
-                        self.display();
-                    } else {
-                        self.showMessage('Видео не найдено', '');
-                    }
-                } else {
-                    self.showMessage('Контент не найден', '');
-                }
-            }).catch(function(err) {
-                console.log('KinoPub: Load error:', err);
-                self.showMessage('Ошибка загрузки', err.message || '');
-            });
-        };
-
-        this.buildFilters = function() {
-            filterData.season = [];
-            var seasons = {};
-
-            videoFiles.forEach(function(f) {
-                if (f.season) seasons[f.season] = true;
-            });
-
-            var seasonNumbers = Object.keys(seasons).map(Number).sort(function(a, b) { return a - b; });
-
-            if (seasonNumbers.length > 1) {
-                filterData.season = seasonNumbers.map(function(n) {
-                    return { title: 'Сезон ' + n, number: n };
+            var html = $('<div class="kinopub-card selector"></div>');
+            
+            // Постер
+            var imgBox = $('<div class="kinopub-card__img"></div>');
+            if (poster) {
+                var img = $('<img />');
+                img.on('error', function() {
+                    imgBox.addClass('kinopub-card__img--empty');
                 });
-                currentSeason = seasonNumbers[0];
+                img.attr('src', poster);
+                imgBox.append(img);
+            } else {
+                imgBox.addClass('kinopub-card__img--empty');
             }
+            html.append(imgBox);
+
+            // Контент
+            var body = $('<div class="kinopub-card__body"></div>');
+            body.append('<div class="kinopub-card__title">' + item.title + '</div>');
+            body.append('<div class="kinopub-card__info">' + year + ' • ' + type + '</div>');
+            html.append(body);
+
+            return html;
         };
 
         this.display = function() {
             var self = this;
-            console.log('KinoPub: display, files:', videoFiles.length);
             scroll.clear();
 
             var filtered = videoFiles;
@@ -338,14 +360,7 @@
             }
 
             filtered.forEach(function(file) {
-                var title = file.title;
-                if (file.season && file.episode) {
-                    title = 'S' + file.season + ':E' + file.episode + ' ' + file.title;
-                }
-
-                var html = $('<div class="selector kinopub-item"></div>');
-                html.append('<div class="kinopub-item__title">' + title + '</div>');
-                html.append('<div class="kinopub-item__info"><span class="kinopub-item__quality">' + (file.quality || '') + '</span></div>');
+                var html = self.createVideoCard(file);
 
                 html.on('hover:enter', function() {
                     self.play(file, filtered);
@@ -362,31 +377,79 @@
             Lampa.Controller.enable('content');
         };
 
-        this.play = function(file, playlist) {
-            console.log('KinoPub: play', file);
-            var lampaPlaylist = playlist.map(function(f) {
-                var title = f.title;
-                if (f.season && f.episode) {
-                    title = '[S' + f.season + '/E' + f.episode + '] ' + f.title;
-                }
-                return {
-                    title: title,
-                    url: f.url,
-                    quality: f.qualitys,
-                    subtitles: f.subtitles
-                };
+        this.createVideoCard = function(file) {
+            var title = file.title;
+            if (file.season && file.episode) {
+                title = file.episode + '. ' + file.title;
+            }
+
+            var html = $('<div class="kinopub-card selector"></div>');
+            
+            // Постер / Превью
+            var imgBox = $('<div class="kinopub-card__img"></div>');
+            if (file.poster) {
+                var img = $('<img />');
+                img.on('error', function() {
+                    imgBox.addClass('kinopub-card__img--empty');
+                });
+                img.attr('src', file.poster);
+                imgBox.append(img);
+            } else {
+                imgBox.addClass('kinopub-card__img--empty');
+            }
+            
+            // Номер эпизода поверх картинки
+            if (file.episode) {
+                imgBox.append('<div class="kinopub-card__episode">' + file.episode + '</div>');
+            }
+            
+            html.append(imgBox);
+
+            // Контент
+            var body = $('<div class="kinopub-card__body"></div>');
+            
+            // Заголовок
+            body.append('<div class="kinopub-card__title">' + title + '</div>');
+            
+            // Информация
+            var infoItems = [];
+            if (file.voice) infoItems.push(file.voice);
+            if (file.year && !file.season) infoItems.push(file.year);
+            
+            if (infoItems.length) {
+                body.append('<div class="kinopub-card__info">' + infoItems.join(' • ') + '</div>');
+            }
+            
+            html.append(body);
+
+            // Правая часть (время и качество)
+            var meta = $('<div class="kinopub-card__meta"></div>');
+            if (file.duration) {
+                meta.append('<div class="kinopub-card__time">' + file.duration + '</div>');
+            }
+            if (file.quality) {
+                meta.append('<div class="kinopub-card__quality">' + file.quality + '</div>');
+            }
+            html.append(meta);
+
+            return html;
+        };
+
+        this.buildFilters = function() {
+            filterData.season = [];
+            var seasons = {};
+
+            videoFiles.forEach(function(f) {
+                if (f.season) seasons[f.season] = true;
             });
 
-            var currentIndex = playlist.indexOf(file);
-            var current = lampaPlaylist[currentIndex];
+            var seasonNumbers = Object.keys(seasons).map(Number).sort(function(a, b) { return a - b; });
 
-            if (current.url) {
-                if (object.movie.id) Lampa.Favorite.add('history', object.movie, 100);
-                current.playlist = lampaPlaylist;
-                Lampa.Player.play(current);
-                Lampa.Player.playlist(lampaPlaylist);
-            } else {
-                Lampa.Noty.show('Ссылка не найдена');
+            if (seasonNumbers.length >= 1) {
+                filterData.season = seasonNumbers.map(function(n) {
+                    return { title: 'Сезон ' + n, number: n };
+                });
+                currentSeason = seasonNumbers[0];
             }
         };
 
@@ -412,28 +475,77 @@
             }
         };
 
+        // ====================================================================
+        // ВОСПРОИЗВЕДЕНИЕ
+        // ====================================================================
+        
+        this.play = function(file, playlist) {
+            var lampaPlaylist = playlist.map(function(f) {
+                var title = f.title;
+                if (f.season && f.episode) {
+                    title = '[S' + f.season + '/E' + f.episode + '] ' + f.title;
+                }
+                return {
+                    title: title,
+                    url: f.url,
+                    quality: f.qualitys,
+                    subtitles: f.subtitles,
+                    season: f.season,
+                    episode: f.episode
+                };
+            });
+
+            var currentIndex = playlist.indexOf(file);
+            var current = lampaPlaylist[currentIndex];
+
+            if (current.url) {
+                if (object.movie.id) {
+                    Lampa.Favorite.add('history', object.movie, 100);
+                }
+                current.playlist = lampaPlaylist;
+                Lampa.Player.play(current);
+                Lampa.Player.playlist(lampaPlaylist);
+            } else {
+                Lampa.Noty.show('Ссылка не найдена');
+            }
+        };
+
+        // ====================================================================
+        // СООБЩЕНИЯ
+        // ====================================================================
+        
         this.showMessage = function(title, subtitle) {
             scroll.clear();
-            var html = $('<div class="online-empty"></div>');
-            html.append('<div class="online-empty__title">' + title + '</div>');
-            html.append('<div class="online-empty__time">' + (subtitle || '') + '</div>');
+            var html = $('<div class="kinopub-empty"></div>');
+            html.append('<div class="kinopub-empty__title">' + title + '</div>');
+            if (subtitle) {
+                html.append('<div class="kinopub-empty__subtitle">' + subtitle + '</div>');
+            }
             scroll.append(html);
             this.loading(false);
             Lampa.Controller.enable('content');
         };
 
         this.loading = function(status) {
-            if (status) this.activity.loader(true);
-            else {
+            if (status) {
+                this.activity.loader(true);
+            } else {
                 this.activity.loader(false);
                 this.activity.toggle();
             }
         };
 
-        this.create = function() { return this.render(); };
+        // ====================================================================
+        // СТАНДАРТНЫЕ МЕТОДЫ LAMPA
+        // ====================================================================
+        
+        this.create = function() {
+            return this.render();
+        };
 
         this.start = function() {
             if (Lampa.Activity.active().activity !== this.activity) return;
+            
             if (!initialized) {
                 initialized = true;
                 this.initialize();
@@ -450,7 +562,9 @@
                     if (Navigator.canmove('up')) Navigator.move('up');
                     else Lampa.Controller.toggle('head');
                 },
-                down: function() { Navigator.move('down'); },
+                down: function() {
+                    Navigator.move('down');
+                },
                 right: function() {
                     if (Navigator.canmove('right')) Navigator.move('right');
                     else if (filterData.season.length > 1) filter.show('Сезон', 'filter');
@@ -465,10 +579,17 @@
             Lampa.Controller.toggle('content');
         };
 
-        this.render = function() { return files.render(); };
-        this.back = function() { Lampa.Activity.backward(); };
+        this.render = function() {
+            return files.render();
+        };
+
+        this.back = function() {
+            Lampa.Activity.backward();
+        };
+
         this.pause = function() {};
         this.stop = function() {};
+
         this.destroy = function() {
             network.clear();
             files.destroy();
@@ -476,21 +597,142 @@
         };
     }
 
+    // ========================================================================
+    // СТИЛИ
+    // ========================================================================
+    
     function addStyles() {
+        var css = [
+            // Карточка
+            '.kinopub-card {',
+            '    display: flex;',
+            '    align-items: center;',
+            '    padding: 1em;',
+            '    margin-bottom: 0.5em;',
+            '    background: rgba(0,0,0,0.3);',
+            '    border-radius: 0.5em;',
+            '    position: relative;',
+            '    transition: background 0.2s;',
+            '}',
+            '.kinopub-card.focus {',
+            '    background: rgba(255,255,255,0.1);',
+            '}',
+            '.kinopub-card.focus::before {',
+            '    content: "";',
+            '    position: absolute;',
+            '    top: -0.3em;',
+            '    left: -0.3em;',
+            '    right: -0.3em;',
+            '    bottom: -0.3em;',
+            '    border: 0.2em solid #fff;',
+            '    border-radius: 0.7em;',
+            '    pointer-events: none;',
+            '}',
+
+            // Изображение
+            '.kinopub-card__img {',
+            '    width: 8em;',
+            '    height: 5em;',
+            '    flex-shrink: 0;',
+            '    margin-right: 1.2em;',
+            '    border-radius: 0.4em;',
+            '    overflow: hidden;',
+            '    background: rgba(255,255,255,0.1);',
+            '    position: relative;',
+            '}',
+            '.kinopub-card__img img {',
+            '    width: 100%;',
+            '    height: 100%;',
+            '    object-fit: cover;',
+            '}',
+            '.kinopub-card__img--empty {',
+            '    display: flex;',
+            '    align-items: center;',
+            '    justify-content: center;',
+            '}',
+            '.kinopub-card__img--empty::after {',
+            '    content: "🎬";',
+            '    font-size: 2em;',
+            '    opacity: 0.5;',
+            '}',
+
+            // Номер эпизода
+            '.kinopub-card__episode {',
+            '    position: absolute;',
+            '    top: 50%;',
+            '    left: 50%;',
+            '    transform: translate(-50%, -50%);',
+            '    font-size: 1.5em;',
+            '    font-weight: bold;',
+            '    text-shadow: 0 0 0.5em rgba(0,0,0,0.8);',
+            '}',
+
+            // Тело карточки
+            '.kinopub-card__body {',
+            '    flex-grow: 1;',
+            '    min-width: 0;',
+            '}',
+            '.kinopub-card__title {',
+            '    font-size: 1.2em;',
+            '    font-weight: 500;',
+            '    margin-bottom: 0.3em;',
+            '    white-space: nowrap;',
+            '    overflow: hidden;',
+            '    text-overflow: ellipsis;',
+            '}',
+            '.kinopub-card__info {',
+            '    font-size: 0.9em;',
+            '    color: rgba(255,255,255,0.6);',
+            '    white-space: nowrap;',
+            '    overflow: hidden;',
+            '    text-overflow: ellipsis;',
+            '}',
+
+            // Мета (справа)
+            '.kinopub-card__meta {',
+            '    flex-shrink: 0;',
+            '    text-align: right;',
+            '    margin-left: 1em;',
+            '}',
+            '.kinopub-card__time {',
+            '    font-size: 1em;',
+            '    margin-bottom: 0.3em;',
+            '}',
+            '.kinopub-card__quality {',
+            '    display: inline-block;',
+            '    padding: 0.2em 0.5em;',
+            '    background: rgba(255,255,255,0.15);',
+            '    border-radius: 0.3em;',
+            '    font-size: 0.85em;',
+            '}',
+
+            // Пустое сообщение
+            '.kinopub-empty {',
+            '    padding: 3em;',
+            '    text-align: center;',
+            '}',
+            '.kinopub-empty__title {',
+            '    font-size: 1.5em;',
+            '    margin-bottom: 0.5em;',
+            '}',
+            '.kinopub-empty__subtitle {',
+            '    font-size: 1em;',
+            '    color: rgba(255,255,255,0.6);',
+            '}'
+        ].join('\n');
+
         var style = document.createElement('style');
-        style.textContent = '.kinopub-item { padding: 1em; background: rgba(0,0,0,0.3); border-radius: 0.3em; margin-bottom: 0.5em; position: relative; }';
-        style.textContent += ' .kinopub-item.focus::after { content: ""; position: absolute; top: -0.3em; left: -0.3em; right: -0.3em; bottom: -0.3em; border: 0.2em solid #fff; border-radius: 0.5em; }';
-        style.textContent += ' .kinopub-item__title { font-size: 1.2em; }';
-        style.textContent += ' .kinopub-item__info { opacity: 0.7; margin-top: 0.3em; }';
-        style.textContent += ' .kinopub-item__quality { background: rgba(255,255,255,0.2); padding: 0.1em 0.4em; border-radius: 0.2em; }';
+        style.textContent = css;
         document.head.appendChild(style);
     }
 
+    // ========================================================================
+    // ЗАПУСК
+    // ========================================================================
+    
     function startPlugin() {
         if (window.kinopub_plugin) return;
         window.kinopub_plugin = true;
-
-        console.log('KinoPub: Starting plugin v' + CONFIG.version);
 
         addStyles();
 
@@ -500,10 +742,10 @@
             type: 'video',
             version: CONFIG.version,
             name: CONFIG.name,
-            description: 'KinoPub балансер',
-            component: 'kinopub'
+            description: 'KinoPub'
         };
 
+        // Кнопка на карточке фильма
         Lampa.Listener.follow('full', function(e) {
             if (e.type === 'complite') {
                 var render = e.object.activity.render();
@@ -526,13 +768,15 @@
                 render.find('.view--torrent').after(btn);
             }
         });
-
-        console.log('KinoPub Plugin v' + CONFIG.version + ' loaded');
     }
 
-    if (window.appready) startPlugin();
-    else Lampa.Listener.follow('app', function(e) {
-        if (e.type === 'ready') startPlugin();
-    });
+    // Ждём готовности Lampa
+    if (window.appready) {
+        startPlugin();
+    } else {
+        Lampa.Listener.follow('app', function(e) {
+            if (e.type === 'ready') startPlugin();
+        });
+    }
 
 })();
