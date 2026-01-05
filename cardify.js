@@ -1,134 +1,100 @@
 (function () {
     'use strict';
 
-    function cardify_start() {
-        // Проверяем, не запущен ли плагин дважды
-        if (window.cardify_plugin_loaded) return;
-        window.cardify_plugin_loaded = true;
+    function cardify_details() {
+        // Проверяем, загружен ли уже стиль
+        if (window.cardify_details_loaded) return;
+        window.cardify_details_loaded = true;
 
-        // Добавляем CSS стили (градиент, позиционирование текста)
-        var css = `
-            /* Скрываем стандартный блок с информацией под постером */
-            .cardify-enabled .card__textbox {
-                display: none !important;
+        // 1. Добавляем CSS для нового стиля
+        var style = `
+            /* Скрываем старый фон и настраиваем новый */
+            .full-start__background {
+                display: none;
+            }
+            .full-start.cardify-style {
+                background-size: cover;
+                background-position: center;
+                background-repeat: no-repeat;
+                position: relative;
+            }
+            .full-start.cardify-style::before {
+                content: '';
+                position: absolute;
+                top: 0; left: 0; right: 0; bottom: 0;
+                background: linear-gradient(to top, #000 0%, rgba(0,0,0,0.8) 40%, rgba(0,0,0,0.4) 100%);
+                z-index: 1;
             }
             
-            /* Настраиваем контейнер постера */
-            .cardify-enabled .card__view {
+            /* Контент поверх фона */
+            .full-start.cardify-style .full-start__body {
                 position: relative;
-                overflow: hidden;
-                border-radius: 10px; /* Скругление углов */
-            }
-
-            /* Создаем новый блок для инфо поверх постера */
-            .cardify-info-overlay {
-                position: absolute;
-                bottom: 0;
-                left: 0;
-                width: 100%;
-                padding: 10px;
-                background: linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.6) 60%, rgba(0,0,0,0) 100%);
+                z-index: 2;
                 display: flex;
                 flex-direction: column;
                 justify-content: flex-end;
-                z-index: 2;
-                pointer-events: none; /* Чтобы клик проходил сквозь текст */
-                box-sizing: border-box;
-                min-height: 50%;
+                height: 100%;
+                padding-bottom: 3em;
             }
 
-            .cardify-title {
+            /* Скрываем обычный постер слева, так как он теперь фон */
+            .full-start.cardify-style .full-start__poster {
+                display: none;
+            }
+
+            /* Настройки текста */
+            .full-start.cardify-style .full-start__title {
+                font-size: 3em;
+                line-height: 1.1;
+                margin-bottom: 0.3em;
+                text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+            }
+            .full-start.cardify-style .full-start__original-title {
+                opacity: 0.7;
+                font-size: 1.2em;
+            }
+            .full-start.cardify-style .full-start__tagline {
+                color: #fbc02d;
+                font-style: italic;
+                margin-bottom: 1em;
+            }
+            .full-start.cardify-style .description {
+                max-width: 70%;
                 font-size: 1.1em;
-                font-weight: bold;
-                color: #fff;
-                white-space: nowrap;
-                overflow: hidden;
-                text-overflow: ellipsis;
-                text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
-                margin-bottom: 3px;
+                line-height: 1.6;
+                color: #ddd;
+                margin-bottom: 2em;
+                text-shadow: 0 1px 2px rgba(0,0,0,0.8);
             }
 
-            .cardify-details {
-                font-size: 0.8em;
-                color: #ccc;
-                display: flex;
-                align-items: center;
-                gap: 8px;
-            }
-
-            .cardify-quality {
-                background: #d32f2f;
-                color: white;
-                padding: 1px 4px;
-                border-radius: 3px;
-                font-size: 0.7em;
-                font-weight: bold;
-            }
-
-            .cardify-year {
-                color: #bbb;
-            }
-
-            /* Анимация фокуса (выделения) */
-            .cardify-enabled.focus .card__view {
-                box-shadow: 0 0 0 3px #fff; 
+            /* Кнопки */
+            .full-start.cardify-style .full-start__buttons {
+                margin-top: 1em;
             }
         `;
-
-        Lampa.Utils.addStyle(css);
-
-        // Сохраняем оригинальный метод отрисовки
-        var original_view = Lampa.Card.prototype.view;
-
-        // Переопределяем метод view
-        Lampa.Card.prototype.view = function () {
-            // Вызываем оригинальный метод, чтобы получить стандартную карточку
-            // Это гарантирует, что вся логика ядра (клики, меню) сохранится
-            var card_element = original_view.call(this);
-            var _this = this; // Ссылка на объект карточки
-
-            // Добавляем класс-маркер
-            $(card_element).addClass('cardify-enabled');
-
-            // Находим блок с картинкой (.card__view)
-            var view_container = $(card_element).find('.card__view');
-            
-            // Если карточка нестандартная (например, настройки), пропускаем
-            if (!view_container.length || !this.data) return card_element;
-
-            // Формируем HTML для оверлея
-            var title = this.data.title || this.data.name || '';
-            var release_year = (this.data.release_date || this.data.first_air_date || '----').substring(0, 4);
-            
-            // Качество (если есть в данных, иначе скрываем)
-            var quality_mark = '';
-            /* Логика определения качества может отличаться, 
-               но обычно берется из this.data.quality если плагины парсеров работают */
-            
-            var info_html = `
-                <div class="cardify-info-overlay">
-                    <div class="cardify-title">${title}</div>
-                    <div class="cardify-details">
-                        <span class="cardify-year">${release_year}</span>
-                        ${this.data.vote_average ? '<span style="color:#fbc02d">★ ' + parseFloat(this.data.vote_average).toFixed(1) + '</span>' : ''}
-                    </div>
-                </div>
-            `;
-
-            // Вставляем наш блок поверх картинки
-            view_container.append(info_html);
-
-            // Опционально: Если нужно скрыть оригинальный блок с текстом сразу при рендере
-            // $(card_element).find('.card__textbox').remove(); 
-            // Но лучше оставить CSS (display: none), чтобы логика лампы могла читать оттуда текст если нужно.
-
-            return card_element;
-        };
         
-        console.log('Cardify Universal Plugin: Loaded');
+        Lampa.Utils.addStyle(style);
+
+        // 2. Перехватываем событие открытия полного описания
+        Lampa.Listener.follow('full', function (e) {
+            if (e.type == 'complite') {
+                var html = e.object.activity.render();
+                
+                // Добавляем наш класс
+                html.addClass('cardify-style');
+
+                // Устанавливаем фон из постера или бэкдропа
+                var img = e.data.background_image || e.data.poster_path || e.data.img;
+                if(img){
+                    // Если путь не полный, добавляем базовый URL TMDB
+                    if(img.indexOf('http') === -1) img = 'https://image.tmdb.org/t/p/original' + img;
+                    html.css('background-image', 'url(' + img + ')');
+                }
+            }
+        });
     }
 
-    if (window.appready) cardify_start();
-    else Lampa.Listener.follow('app', 'ready', cardify_start);
+    if (window.appready) cardify_details();
+    else Lampa.Listener.follow('app', 'ready', cardify_details);
 
 })();
