@@ -1,118 +1,136 @@
 (function () {
     'use strict';
 
-    function cardify_full_start() {
-        if (window.cardify_detail_plugin) return;
-        window.cardify_detail_plugin = true;
+    function cardify_pro() {
+        if (window.cardify_pro_loaded) return;
+        window.cardify_pro_loaded = true;
 
-        // CSS Стили для превращения обычного описания в Cardify
-        var style = `
-            /* Делаем контейнер относительным для позиционирования фона */
-            .full-start {
+        // 1. Агрессивные CSS стили
+        var css = `
+            /* --- Основа: скрываем стандартный фон и постер --- */
+            .cardify-active .full-start__background { display: none !important; }
+            .cardify-active .full-start__poster { display: none !important; }
+            
+            /* --- Настраиваем контейнер --- */
+            .cardify-active.full-start {
                 position: relative !important;
-                background-color: #000 !important;
-                overflow: hidden;
+                background: #000 !important;
+                overflow: hidden !important;
+                display: flex !important;
+                flex-direction: column !important;
+                justify-content: flex-end !important; /* Прижимаем контент к низу */
             }
 
-            /* Скрываем стандартный фон, чтобы заменить своим */
-            .full-start__background {
-                display: none !important;
-            }
-
-            /* Создаем наш слой фона */
-            .cardify-bg-layer {
+            /* --- Наш новый фон --- */
+            .cardify-backdrop {
                 position: absolute;
                 top: 0; left: 0; right: 0; bottom: 0;
+                z-index: 0;
                 background-size: cover;
                 background-position: center top;
                 background-repeat: no-repeat;
-                opacity: 0.6; /* Немного затемняем саму картинку */
-                z-index: 0;
-                transition: opacity 0.5s ease;
+                opacity: 1;
+                transition: transform 10s ease; /* Эффект зума */
             }
-
-            /* Градиент поверх картинки, чтобы текст читался */
-            .cardify-bg-layer::after {
+            /* Градиент поверх фона, чтобы текст читался */
+            .cardify-backdrop::after {
                 content: '';
                 position: absolute;
                 top: 0; left: 0; right: 0; bottom: 0;
-                background: linear-gradient(to top, #000 5%, rgba(0,0,0,0.8) 40%, rgba(0,0,0,0.2) 100%);
+                background: linear-gradient(to top, rgba(0,0,0,1) 0%, rgba(0,0,0,0.8) 20%, rgba(0,0,0,0.4) 50%, rgba(0,0,0,0.2) 100%);
             }
 
-            /* Скрываем постер слева */
-            .full-start__poster {
-                display: none !important;
-            }
-
-            /* Растягиваем блок с текстом на всю ширину */
-            .full-start__body {
-                position: relative;
-                z-index: 2;
+            /* --- Контент (Текст) --- */
+            .cardify-active .full-start__body {
+                position: relative !important;
+                z-index: 5 !important;
                 width: 100% !important;
-                padding-left: 2em !important; /* Отступ слева */
-                padding-right: 2em !important;
-                padding-bottom: 2em !important;
-                display: flex;
-                flex-direction: column;
-                justify-content: flex-end; /* Прижимаем текст к низу */
-                min-height: 80vh; /* Минимальная высота */
+                padding: 2em 3em 3em 3em !important; /* Отступы: верх, право, низ, лево */
+                box-sizing: border-box !important;
+                margin-top: 40vh !important; /* Отступаем сверху, чтобы было место для картинки */
             }
 
-            /* Увеличиваем заголовок */
-            .full-start__title {
+            /* Заголовок */
+            .cardify-active .full-start__title {
                 font-size: 3.5em !important;
-                line-height: 1.1;
-                margin-bottom: 0.2em;
-                text-shadow: 2px 2px 4px rgba(0,0,0,0.9);
+                font-weight: 800 !important;
+                text-shadow: 0 4px 8px rgba(0,0,0,0.8);
+                margin-bottom: 0.2em !important;
+                line-height: 1 !important;
             }
 
-            /* Стиль описания */
-            .full-start__description {
-                font-size: 1.1em;
-                line-height: 1.6;
-                color: #ddd;
-                max-width: 80%; /* Чтобы строки не были слишком длинными */
-                text-shadow: 1px 1px 2px rgba(0,0,0,0.9);
+            /* Мета-информация (год, страны) */
+            .cardify-active .full-start__original-title,
+            .cardify-active .full-start__tagline {
+                font-size: 1.2em !important;
+                opacity: 0.9;
+                text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+            }
+
+            /* Описание */
+            .cardify-active .description {
+                font-size: 1.1em !important;
+                line-height: 1.5 !important;
+                max-width: 65% !important; /* Ограничиваем ширину текста, как в оригинале */
+                color: #e0e0e0 !important;
+                margin-top: 1em !important;
+                text-shadow: 0 2px 2px rgba(0,0,0,1);
+            }
+
+            /* Кнопки */
+            .cardify-active .full-start__buttons {
+                margin-top: 2em !important;
             }
             
-            /* Поднимаем кнопки чуть выше */
-            .full-start__buttons {
-                margin-top: 1.5em;
+            /* Скроллбар (если описание длинное) */
+            .cardify-active .scroll__content {
+                opacity: 1 !important;
             }
         `;
 
-        Lampa.Utils.addStyle(style);
+        Lampa.Utils.addStyle(css);
 
-        // Слушаем событие открытия карточки
+        // 2. Логика внедрения
         Lampa.Listener.follow('full', function (e) {
-            // Событие 'complite' (опечатка в ядре лампы, так и пишем) означает, что HTML построен
             if (e.type == 'complite') {
-                var html = e.object.activity.render();
-                var data = e.data.movie || e.data;
-
-                // Находим картинку: сначала пробуем backdrop (горизонтальная), если нет - poster
-                var img = data.backdrop_path || data.poster_path || data.img;
+                // Получаем jQuery объект отрендеренной страницы
+                var render = e.object.activity.render();
                 
-                // Формируем полный URL для TMDB в высоком качестве (original)
-                var img_url = img;
-                if (img && img.indexOf('http') === -1) {
-                    img_url = 'https://image.tmdb.org/t/p/original' + img;
+                // Ищем основной блок .full-start
+                var full_start = render.find('.full-start');
+                
+                // Добавляем наш класс-активатор CSS
+                full_start.addClass('cardify-active');
+
+                // Получаем данные о фильме
+                var data = e.data.movie || e.data;
+                
+                // Ищем самую качественную картинку (Backdrop)
+                var img = data.backdrop_path || data.poster_path || data.img;
+                var img_url = '';
+
+                if (img) {
+                    // Формируем ссылку на оригинал (максимальное качество)
+                    if (img.indexOf('http') >= 0) {
+                        img_url = img;
+                    } else {
+                        img_url = 'https://image.tmdb.org/t/p/original' + img;
+                    }
                 }
 
-                // Удаляем старый слой Cardify если он вдруг остался
-                html.find('.cardify-bg-layer').remove();
+                // Удаляем старый фон Cardify, если он вдруг есть
+                full_start.find('.cardify-backdrop').remove();
 
-                // Добавляем наш фон
+                // Вставляем наш фон В НАЧАЛО блока
                 if (img_url) {
-                    html.prepend('<div class="cardify-bg-layer" style="background-image: url(' + img_url + ')"></div>');
+                    full_start.prepend('<div class="cardify-backdrop" style="background-image: url(' + img_url + ');"></div>');
                 }
             }
         });
         
-        console.log('Cardify Detail Plugin: Loaded');
+        console.log('Cardify Pro: Loaded & Ready');
     }
 
-    if (window.appready) cardify_full_start();
-    else Lampa.Listener.follow('app', 'ready', cardify_full_start);
-
+    if (window.appready) cardify_pro();
+    else Lampa.Listener.follow('app', 'ready', cardify_pro);
 })();
