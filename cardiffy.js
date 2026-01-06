@@ -3,6 +3,7 @@
 
     var PLUGIN_VERSION = '2.1.1-DEBUG';
     var DEBUG = true;
+    var LOG_PREFIX = 'Cardify'; // Единый префикс для всех логов
 
     // ==================== КОНФИГУРАЦИЯ ====================
     var CONFIG = {
@@ -24,27 +25,52 @@
     };
 
     if (typeof $ === 'undefined' && typeof jQuery === 'undefined') {
-        console.error('[Cardify] jQuery is required');
+        console.log(LOG_PREFIX, 'ERROR: jQuery is required');
         return;
     }
     var $ = window.$ || window.jQuery;
 
+    // ==================== ЕДИНОЕ ЛОГИРОВАНИЕ ====================
+    function log() {
+        if (!DEBUG) return;
+        var args = Array.prototype.slice.call(arguments);
+        var message = args.map(function(arg) {
+            if (typeof arg === 'object') {
+                try { return JSON.stringify(arg); } catch(e) { return String(arg); }
+            }
+            return String(arg);
+        }).join(' | ');
+        console.log(LOG_PREFIX, message);
+    }
+
     // ==================== ДИАГНОСТИКА ====================
-    var Diagnostics = {
-        results: {},
+    var Diag = {
+        results: [],
         
-        log: function(category, message, data) {
-            this.results[category] = { message: message, data: data, time: new Date().toISOString() };
-            console.log('[Cardify DIAG] [' + category + ']', message, data || '');
+        add: function(category, message, data) {
+            var entry = {
+                time: new Date().toLocaleTimeString(),
+                cat: category,
+                msg: message,
+                data: data || null
+            };
+            this.results.push(entry);
+            
+            // Логируем с единым префиксом
+            if (data) {
+                log('[' + category + ']', message, data);
+            } else {
+                log('[' + category + ']', message);
+            }
         },
         
         checkVideoSupport: function() {
             var video = document.createElement('video');
             var support = {
-                canPlayHLS: video.canPlayType('application/vnd.apple.mpegurl'),
-                canPlayMP4: video.canPlayType('video/mp4'),
-                canPlayWebM: video.canPlayType('video/webm'),
-                canPlayTS: video.canPlayType('video/mp2t'),
+                nativeHLS: video.canPlayType('application/vnd.apple.mpegurl'),
+                mp4: video.canPlayType('video/mp4'),
+                webm: video.canPlayType('video/webm'),
+                ts: video.canPlayType('video/mp2t'),
                 MSE: typeof MediaSource !== 'undefined',
                 MSE_H264: false
             };
@@ -55,91 +81,37 @@
                 } catch(e) {}
             }
             
-            this.log('VIDEO_SUPPORT', 'Browser capabilities', support);
+            this.add('SUPPORT', 'Video capabilities', support);
             return support;
         },
         
         checkHlsJs: function() {
             var result = {
                 loaded: typeof Hls !== 'undefined',
-                supported: false
+                supported: typeof Hls !== 'undefined' && Hls.isSupported()
             };
-            if (result.loaded) {
-                result.supported = Hls.isSupported();
-            }
-            this.log('HLS_JS', 'HLS.js status', result);
+            this.add('HLS.JS', 'Status', result);
             return result;
         },
         
-        testVideoPlayback: function(callback) {
-            var self = this;
-            
-            // Тестовое видео (маленький MP4)
-            var testVideo = document.createElement('video');
-            testVideo.muted = true;
-            testVideo.playsInline = true;
-            testVideo.style.cssText = 'position:fixed;top:-9999px;width:1px;height:1px;';
-            document.body.appendChild(testVideo);
-            
-            var timeout = setTimeout(function() {
-                self.log('TEST_VIDEO', 'Timeout - no response', {});
-                cleanup();
-                callback(false);
-            }, 5000);
-            
-            function cleanup() {
-                clearTimeout(timeout);
-                testVideo.remove();
-            }
-            
-            testVideo.oncanplay = function() {
-                self.log('TEST_VIDEO', 'Can play test video', { readyState: testVideo.readyState });
-                testVideo.play().then(function() {
-                    self.log('TEST_VIDEO', 'Play SUCCESS', {});
-                    cleanup();
-                    callback(true);
-                }).catch(function(e) {
-                    self.log('TEST_VIDEO', 'Play FAILED', { error: e.message });
-                    cleanup();
-                    callback(false);
-                });
-            };
-            
-            testVideo.onerror = function(e) {
-                self.log('TEST_VIDEO', 'Error loading test video', { error: e });
-                cleanup();
-                callback(false);
-            };
-            
-            // Маленький тестовый MP4 (base64)
-            testVideo.src = 'data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAAIZnJlZQAAAAhtZGF0AAAA1m1vb3YAAABsbXZoZAAAAAAAAAAAAAAAAAAAA+gAAAAAAAEAAAEAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAABidWR0YQAAAFptZXRhAAAAAAAAACFoZGxyAAAAAAAAAABtZGlyYXBwbAAAAAAAAAAAAAAAAC1pbHN0AAAAJal0b28AAAAdZGF0YQAAAAEAAAAATGF2ZjU4Ljc2LjEwMA==';
-        },
-        
-        showReport: function() {
-            console.log('========== CARDIFY DIAGNOSTICS REPORT ==========');
-            console.log(JSON.stringify(this.results, null, 2));
-            console.log('=================================================');
+        report: function() {
+            log('=== DIAGNOSTIC REPORT ===');
+            this.results.forEach(function(r) {
+                log(r.time, '[' + r.cat + ']', r.msg, r.data || '');
+            });
+            log('=== END REPORT ===');
         }
     };
 
-    // ==================== ЛОГИРОВАНИЕ ====================
-    function log() {
-        if (DEBUG) {
-            var args = Array.prototype.slice.call(arguments);
-            args.unshift('[Cardify v' + PLUGIN_VERSION + ']');
-            console.log.apply(console, args);
-        }
-    }
-
-    log('Загрузка плагина...');
+    log('Plugin loading... v' + PLUGIN_VERSION);
     
-    // Запускаем диагностику сразу
-    var videoSupport = Diagnostics.checkVideoSupport();
+    // Проверяем поддержку видео сразу
+    var videoSupport = Diag.checkVideoSupport();
 
     // ==================== HLS.JS LOADER ====================
     var hlsReady = new Promise(function(resolve) {
         if (typeof Hls !== 'undefined') {
-            Diagnostics.log('HLS_LOAD', 'Already loaded', {});
+            Diag.add('HLS.JS', 'Already loaded');
             resolve(true);
             return;
         }
@@ -147,12 +119,12 @@
         var script = document.createElement('script');
         script.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.4.12';
         script.onload = function() {
-            Diagnostics.log('HLS_LOAD', 'Loaded successfully', {});
-            Diagnostics.checkHlsJs();
+            Diag.add('HLS.JS', 'Loaded successfully');
+            Diag.checkHlsJs();
             resolve(true);
         };
         script.onerror = function() {
-            Diagnostics.log('HLS_LOAD', 'FAILED to load', {});
+            Diag.add('HLS.JS', 'FAILED to load');
             resolve(false);
         };
         document.head.appendChild(script);
@@ -279,7 +251,7 @@
         var searchProxy = '';
         
         function getStreamUrl(videoId, callback, groupId) {
-            Diagnostics.log('STREAM_REQUEST', 'Getting stream for', { videoId: videoId });
+            Diag.add('STREAM', 'Requesting stream URL', { videoId: videoId });
             
             var apiUrl = 'https://rutube.ru/api/play/options/' + videoId + '/?no_404=true&referer=&pver=v2';
             
@@ -287,23 +259,28 @@
                 url: apiUrl, dataType: 'json', timeout: CONFIG.STREAM_TIMEOUT,
                 success: function(data) {
                     if (data && data.video_balancer && data.video_balancer.m3u8) {
-                        Diagnostics.log('STREAM_SUCCESS', 'Got m3u8', { url: data.video_balancer.m3u8.substring(0, 80) });
-                        callback({ m3u8: data.video_balancer.m3u8 });
+                        var m3u8 = data.video_balancer.m3u8;
+                        Diag.add('STREAM', 'Got m3u8 URL', { url: m3u8.substring(0, 60) + '...' });
+                        callback({ m3u8: m3u8 });
                     } else {
-                        Diagnostics.log('STREAM_FAIL', 'No m3u8 in response', {});
+                        Diag.add('STREAM', 'No m3u8 in response, trying proxy');
                         tryStreamProxy(videoId, callback, groupId);
                     }
                 },
                 error: function(xhr) {
-                    Diagnostics.log('STREAM_ERROR', 'Request failed', { status: xhr.status, statusText: xhr.statusText });
-                    if (xhr.statusText === 'abort') { callback(null); return; }
+                    if (xhr.statusText === 'abort') { 
+                        Diag.add('STREAM', 'Request aborted');
+                        callback(null); 
+                        return; 
+                    }
+                    Diag.add('STREAM', 'Request failed', { status: xhr.status });
                     tryStreamProxy(videoId, callback, groupId);
                 }
             }, groupId);
         }
         
         function tryStreamProxy(videoId, callback, groupId) {
-            Diagnostics.log('STREAM_PROXY', 'Trying proxy', {});
+            Diag.add('STREAM', 'Trying CORS proxy');
             var proxyUrl = 'https://corsproxy.io/?' + encodeURIComponent(
                 'https://rutube.ru/api/play/options/' + videoId + '/?no_404=true&referer=&pver=v2'
             );
@@ -311,15 +288,15 @@
                 url: proxyUrl, dataType: 'json', timeout: CONFIG.STREAM_TIMEOUT,
                 success: function(data) {
                     if (data && data.video_balancer && data.video_balancer.m3u8) {
-                        Diagnostics.log('STREAM_PROXY_SUCCESS', 'Got m3u8 via proxy', {});
+                        Diag.add('STREAM', 'Proxy success - got m3u8');
                         callback({ m3u8: data.video_balancer.m3u8 });
                     } else {
-                        Diagnostics.log('STREAM_PROXY_FAIL', 'No m3u8', {});
+                        Diag.add('STREAM', 'Proxy failed - no m3u8');
                         callback(null);
                     }
                 },
-                error: function() {
-                    Diagnostics.log('STREAM_PROXY_ERROR', 'Proxy request failed', {});
+                error: function(xhr) {
+                    Diag.add('STREAM', 'Proxy request failed', { status: xhr.status });
                     callback(null);
                 }
             }, groupId);
@@ -337,7 +314,11 @@
                 success: function(data) {
                     if (data && data.length && data[0].url) {
                         var videoId = Utils.extractVideoId(data[0].url);
-                        if (videoId) { callback({ title: data[0].title, videoId: videoId, source: 'rootu' }); return; }
+                        if (videoId) { 
+                            Diag.add('SEARCH', 'Rootu found trailer', { videoId: videoId });
+                            callback({ title: data[0].title, videoId: videoId, source: 'rootu' }); 
+                            return; 
+                        }
                     }
                     callback(null);
                 },
@@ -365,7 +346,11 @@
                         if (r.duration && r.duration > CONFIG.MAX_TRAILER_DURATION) continue;
                         if (rTitle.indexOf(cleanSearch) < 0) continue;
                         var videoId = Utils.extractVideoId(r.embed_url || r.video_url);
-                        if (videoId) { callback({ title: r.title, videoId: videoId, source: 'rutube' }); return; }
+                        if (videoId) { 
+                            Diag.add('SEARCH', 'Rutube found trailer', { videoId: videoId });
+                            callback({ title: r.title, videoId: videoId, source: 'rutube' }); 
+                            return; 
+                        }
                     }
                     callback(null);
                 },
@@ -373,6 +358,7 @@
                     if (xhr.statusText === 'abort') { callback(null); return; }
                     if (!searchProxy && xhr.status === 0) {
                         searchProxy = 'https://rutube-search.root-1a7.workers.dev/';
+                        Diag.add('SEARCH', 'Switching to search proxy');
                         searchRutube(movie, isTv, callback, groupId);
                         return;
                     }
@@ -383,13 +369,17 @@
         
         function findTrailer(movie, isTv, callback, groupId) {
             var title = movie.title || movie.name || movie.original_title || movie.original_name || '';
-            if (!title || title.length < 2) { callback(null); return; }
+            if (!title || title.length < 2) { 
+                Diag.add('SEARCH', 'No title provided');
+                callback(null); 
+                return; 
+            }
             
-            Diagnostics.log('SEARCH_START', 'Looking for trailer', { title: title });
+            Diag.add('SEARCH', 'Looking for trailer', { title: title, id: movie.id });
             
             var cached = TrailerCache.get(movie);
             if (cached && cached.videoId) {
-                Diagnostics.log('CACHE_HIT', 'Found in cache', { hasM3u8: !!cached.m3u8 });
+                Diag.add('CACHE', 'Found in cache', { hasM3u8: !!cached.m3u8, videoId: cached.videoId });
                 if (cached.m3u8) {
                     callback({ videoId: cached.videoId, m3u8: cached.m3u8, fromCache: true });
                     return;
@@ -411,17 +401,17 @@
                 pending--;
                 if (!completed && results.rootu && results.rootu.videoId) {
                     completed = true;
-                    Diagnostics.log('SEARCH_FOUND', 'Via rootu.top', { videoId: results.rootu.videoId });
+                    Diag.add('SEARCH', 'Using rootu result');
                     fetchStreamAndReturn(results.rootu);
                     return;
                 }
                 if (pending === 0 && !completed) {
                     if (results.rutube && results.rutube.videoId) {
                         completed = true;
-                        Diagnostics.log('SEARCH_FOUND', 'Via rutube', { videoId: results.rutube.videoId });
+                        Diag.add('SEARCH', 'Using rutube result');
                         fetchStreamAndReturn(results.rutube);
                     } else {
-                        Diagnostics.log('SEARCH_NOTFOUND', 'No trailer found', {});
+                        Diag.add('SEARCH', 'No trailer found');
                         TrailerCache.set(movie, { videoId: null });
                         callback(null);
                     }
@@ -434,7 +424,10 @@
                     if (stream && stream.m3u8) {
                         TrailerCache.updateStream(movie, stream.m3u8);
                         callback({ videoId: result.videoId, m3u8: stream.m3u8 });
-                    } else { callback(null); }
+                    } else { 
+                        Diag.add('STREAM', 'Failed to get stream URL');
+                        callback(null); 
+                    }
                 }, groupId);
             }
             
@@ -502,10 +495,7 @@
         this.hls = null;
         this.groupId = Utils.generateId('trailer');
         
-        Diagnostics.log('TRAILER_INIT', 'Creating background trailer', { 
-            videoId: trailerData.videoId, 
-            hasM3u8: !!trailerData.m3u8 
-        });
+        Diag.add('VIDEO', 'Creating player', { videoId: trailerData.videoId, hasM3u8: !!trailerData.m3u8 });
         
         this.$render = $(render);
         this.$background = this.$render.find('.full-start__background');
@@ -526,7 +516,6 @@
         this._boundOnError = this._onError.bind(this);
         this._boundOnCanPlay = this._onCanPlay.bind(this);
         this._boundOnWaiting = this._onWaiting.bind(this);
-        this._boundOnStalled = this._onStalled.bind(this);
         this._onDestroy = onDestroy;
         
         window.addEventListener('resize', this._boundUpdateScale);
@@ -536,7 +525,11 @@
         } else {
             RutubeAPI.getStreamUrl(trailerData.videoId, function(stream) {
                 if (self.destroyed) return;
-                if (!stream || !stream.m3u8) { self.destroy(); return; }
+                if (!stream || !stream.m3u8) { 
+                    Diag.add('VIDEO', 'No stream URL, destroying');
+                    self.destroy(); 
+                    return; 
+                }
                 self._loadStream(stream.m3u8);
             }, this.groupId);
         }
@@ -554,21 +547,18 @@
         var self = this;
         var video = this.videoElement;
         
-        Diagnostics.log('LOAD_STREAM', 'Starting to load', { url: m3u8Url.substring(0, 80) });
+        Diag.add('VIDEO', 'Loading stream', { url: m3u8Url.substring(0, 50) + '...' });
         
         // Проверяем Native HLS
-        var nativeHLS = video.canPlayType('application/vnd.apple.mpegurl');
-        Diagnostics.log('NATIVE_HLS', 'Support check', { result: nativeHLS });
+        var nativeSupport = video.canPlayType('application/vnd.apple.mpegurl');
+        Diag.add('VIDEO', 'Native HLS support', { value: nativeSupport || 'none' });
         
-        if (nativeHLS && nativeHLS !== '') {
-            Diagnostics.log('USING_NATIVE', 'Using native HLS', {});
+        if (nativeSupport && nativeSupport !== '') {
+            Diag.add('VIDEO', 'Using NATIVE HLS');
             video.src = m3u8Url;
             this._setupVideoEvents();
-            
-            // Принудительная попытка воспроизведения
             setTimeout(function() {
-                if (self.destroyed) return;
-                self._tryPlay();
+                if (!self.destroyed) self._tryPlay();
             }, 100);
             return;
         }
@@ -577,10 +567,11 @@
         hlsReady.then(function(loaded) {
             if (self.destroyed) return;
             
-            Diagnostics.log('HLS_JS_CHECK', 'Checking HLS.js', { loaded: loaded, supported: loaded && Hls.isSupported() });
+            var hlsSupported = loaded && typeof Hls !== 'undefined' && Hls.isSupported();
+            Diag.add('VIDEO', 'HLS.js check', { loaded: loaded, supported: hlsSupported });
             
-            if (loaded && typeof Hls !== 'undefined' && Hls.isSupported()) {
-                Diagnostics.log('USING_HLSJS', 'Using HLS.js', {});
+            if (hlsSupported) {
+                Diag.add('VIDEO', 'Using HLS.JS');
                 
                 self.hls = new Hls({ 
                     autoStartLoad: true,
@@ -588,45 +579,49 @@
                     maxBufferLength: CONFIG.HLS_MAX_BUFFER,
                     maxMaxBufferLength: 30,
                     lowLatencyMode: true,
-                    backBufferLength: 0,
-                    debug: false
+                    backBufferLength: 0
                 });
                 
                 self.hls.on(Hls.Events.MANIFEST_PARSED, function(event, data) {
-                    Diagnostics.log('HLS_MANIFEST', 'Manifest parsed', { levels: data.levels.length });
+                    Diag.add('VIDEO', 'HLS manifest parsed', { levels: data.levels.length });
                     self._tryPlay();
                 });
                 
                 self.hls.on(Hls.Events.ERROR, function(event, data) {
-                    Diagnostics.log('HLS_ERROR', 'HLS.js error', { type: data.type, fatal: data.fatal, details: data.details });
+                    Diag.add('VIDEO', 'HLS error', { 
+                        type: data.type, 
+                        fatal: data.fatal, 
+                        details: data.details 
+                    });
                     if (data.fatal) {
                         if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-                            Diagnostics.log('HLS_RECOVERY', 'Trying to recover from network error', {});
+                            Diag.add('VIDEO', 'Trying network recovery');
                             self.hls.startLoad();
                         } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-                            Diagnostics.log('HLS_RECOVERY', 'Trying to recover from media error', {});
+                            Diag.add('VIDEO', 'Trying media recovery');
                             self.hls.recoverMediaError();
                         } else {
+                            Diag.add('VIDEO', 'Fatal error, destroying');
                             self.destroy();
                         }
                     }
                 });
                 
-                self.hls.on(Hls.Events.FRAG_LOADED, function(event, data) {
-                    Diagnostics.log('HLS_FRAG', 'Fragment loaded', { sn: data.frag.sn });
+                self.hls.on(Hls.Events.FRAG_LOADED, function() {
+                    Diag.add('VIDEO', 'First fragment loaded');
+                    // Удаляем этот listener после первого фрагмента
+                    self.hls.off(Hls.Events.FRAG_LOADED);
                 });
                 
                 self.hls.loadSource(m3u8Url);
                 self.hls.attachMedia(video);
                 self._setupVideoEvents();
             } else {
-                // Последняя попытка - напрямую
-                Diagnostics.log('USING_DIRECT', 'Direct video source (last resort)', {});
+                Diag.add('VIDEO', 'Using DIRECT source (fallback)');
                 video.src = m3u8Url;
                 self._setupVideoEvents();
                 setTimeout(function() {
-                    if (self.destroyed) return;
-                    self._tryPlay();
+                    if (!self.destroyed) self._tryPlay();
                 }, 100);
             }
         });
@@ -638,7 +633,6 @@
         video.addEventListener('canplay', this._boundOnCanPlay);
         video.addEventListener('playing', this._boundOnPlaying);
         video.addEventListener('waiting', this._boundOnWaiting);
-        video.addEventListener('stalled', this._boundOnStalled);
         video.addEventListener('error', this._boundOnError);
     };
     
@@ -649,16 +643,14 @@
         video.removeEventListener('canplay', this._boundOnCanPlay);
         video.removeEventListener('playing', this._boundOnPlaying);
         video.removeEventListener('waiting', this._boundOnWaiting);
-        video.removeEventListener('stalled', this._boundOnStalled);
         video.removeEventListener('error', this._boundOnError);
     };
     
     BackgroundTrailer.prototype._onMetadata = function() {
         if (this.destroyed) return;
-        Diagnostics.log('VIDEO_METADATA', 'Metadata loaded', { 
-            duration: this.videoElement.duration,
-            videoWidth: this.videoElement.videoWidth,
-            videoHeight: this.videoElement.videoHeight
+        Diag.add('VIDEO', 'Metadata loaded', { 
+            duration: Math.round(this.videoElement.duration),
+            size: this.videoElement.videoWidth + 'x' + this.videoElement.videoHeight
         });
         
         var video = this.videoElement;
@@ -670,30 +662,30 @@
     
     BackgroundTrailer.prototype._onCanPlay = function() {
         if (this.destroyed) return;
-        Diagnostics.log('VIDEO_CANPLAY', 'Can play', { readyState: this.videoElement.readyState });
+        Diag.add('VIDEO', 'Can play event', { readyState: this.videoElement.readyState });
         this._tryPlay();
     };
     
     BackgroundTrailer.prototype._onPlaying = function() {
         if (this.destroyed) return;
-        Diagnostics.log('VIDEO_PLAYING', 'Video is playing!', {});
+        Diag.add('VIDEO', '>>> PLAYING! <<<');
         this.$html.addClass('cardify-bg-video--visible');
         this.$background.addClass('cardify-bg-hidden');
     };
     
     BackgroundTrailer.prototype._onWaiting = function() {
-        Diagnostics.log('VIDEO_WAITING', 'Video is buffering', {});
-    };
-    
-    BackgroundTrailer.prototype._onStalled = function() {
-        Diagnostics.log('VIDEO_STALLED', 'Video stalled', {});
+        Diag.add('VIDEO', 'Buffering...');
     };
     
     BackgroundTrailer.prototype._onError = function(e) {
         var video = this.videoElement;
-        var errorCode = video.error ? video.error.code : 'unknown';
-        var errorMessage = video.error ? video.error.message : 'unknown';
-        Diagnostics.log('VIDEO_ERROR', 'Video error', { code: errorCode, message: errorMessage });
+        var errorInfo = {
+            code: video.error ? video.error.code : 'none',
+            message: video.error ? video.error.message : 'none',
+            networkState: video.networkState,
+            readyState: video.readyState
+        };
+        Diag.add('VIDEO', 'ERROR!', errorInfo);
     };
     
     BackgroundTrailer.prototype._tryPlay = function() {
@@ -702,32 +694,35 @@
         
         if (!video || this.destroyed) return;
         
-        Diagnostics.log('TRY_PLAY', 'Attempting to play', { 
+        Diag.add('VIDEO', 'Attempting play', { 
             paused: video.paused, 
             readyState: video.readyState,
-            networkState: video.networkState 
+            networkState: video.networkState,
+            muted: video.muted
         });
         
-        // Убеждаемся что muted
         video.muted = true;
         video.volume = 0;
         
         var playPromise = video.play();
         if (playPromise !== undefined) {
             playPromise.then(function() {
-                Diagnostics.log('PLAY_SUCCESS', 'Play started successfully', {});
+                Diag.add('VIDEO', 'Play promise RESOLVED');
             }).catch(function(error) {
-                Diagnostics.log('PLAY_FAILED', 'Play failed', { 
+                Diag.add('VIDEO', 'Play REJECTED', { 
                     name: error.name, 
                     message: error.message 
                 });
                 
-                // Ещё одна попытка через небольшую задержку
+                // Повторная попытка
                 setTimeout(function() {
                     if (self.destroyed) return;
+                    Diag.add('VIDEO', 'Retry play...');
                     video.muted = true;
-                    video.play().catch(function(e) {
-                        Diagnostics.log('PLAY_RETRY_FAILED', 'Retry also failed', { message: e.message });
+                    video.play().then(function() {
+                        Diag.add('VIDEO', 'Retry SUCCESS');
+                    }).catch(function(e) {
+                        Diag.add('VIDEO', 'Retry FAILED', { message: e.message });
                     });
                 }, 500);
             });
@@ -737,21 +732,33 @@
     BackgroundTrailer.prototype.destroy = function() {
         if (this.destroyed) return;
         this.destroyed = true;
-        Diagnostics.log('TRAILER_DESTROY', 'Destroying trailer', {});
+        Diag.add('VIDEO', 'Destroying player');
+        
         AjaxManager.abortGroup(this.groupId);
         window.removeEventListener('resize', this._boundUpdateScale);
         this._removeVideoEvents();
-        if (this.hls) { try { this.hls.destroy(); } catch (e) {} this.hls = null; }
+        
+        if (this.hls) { 
+            try { this.hls.destroy(); } catch (e) {} 
+            this.hls = null; 
+        }
+        
         if (this.videoElement) {
-            try { this.videoElement.pause(); this.videoElement.src = ''; this.videoElement.load(); } catch (e) {}
+            try { 
+                this.videoElement.pause(); 
+                this.videoElement.src = ''; 
+                this.videoElement.load(); 
+            } catch (e) {}
             this.videoElement = null;
         }
+        
         if (this.$background) this.$background.removeClass('cardify-bg-hidden');
         if (this.$html) { this.$html.remove(); this.$html = null; }
         if (typeof this._onDestroy === 'function') this._onDestroy();
         
-        // Показываем финальный отчёт
-        Diagnostics.showReport();
+        // Финальный отчёт
+        Diag.add('END', '=== Session ended ===');
+        Diag.report();
     };
 
     // ==================== ORIGINAL TITLE ====================
@@ -817,12 +824,7 @@
 
     // ==================== PLUGIN START ====================
     function startPlugin() {
-        log('Инициализация...');
-        
-        // Тест воспроизведения видео
-        Diagnostics.testVideoPlayback(function(success) {
-            Diagnostics.log('VIDEO_TEST', 'Video playback test', { success: success });
-        });
+        Diag.add('INIT', 'Plugin starting', { version: PLUGIN_VERSION });
         
         OriginalTitle.init();
 
@@ -868,6 +870,9 @@
             if (e.type === 'complite') {
                 var render = e.object.activity.render();
                 var activityId = e.object.activity.id || Utils.generateId('activity');
+                
+                Diag.add('CARD', 'Card opened', { id: e.data.movie ? e.data.movie.id : 'unknown' });
+                
                 render.find('.full-start__background').addClass('cardify__background');
                 if (e.data.movie) RatingsRenderer.render(render, e.data.movie);
                 if (Lampa.Storage.field('cardify_show_original_title') !== false && e.data.movie) {
@@ -880,7 +885,9 @@
                     var startTime = Date.now();
                     
                     RutubeAPI.findTrailer(movie, isTv, function(result) {
-                        Diagnostics.log('TRAILER_RESULT', 'Search completed in ' + (Date.now() - startTime) + 'ms', { found: !!result });
+                        var elapsed = Date.now() - startTime;
+                        Diag.add('SEARCH', 'Completed in ' + elapsed + 'ms', { found: !!result });
+                        
                         if (result && (result.m3u8 || result.videoId)) {
                             if (activeTrailers[activityId]) activeTrailers[activityId].destroy();
                             activeTrailers[activityId] = new BackgroundTrailer(render, result, function() { delete activeTrailers[activityId]; });
@@ -889,6 +896,7 @@
                 }
             }
             if (e.type === 'destroy') {
+                Diag.add('CARD', 'Card closed');
                 var activityId = e.object.activity.id || 0;
                 AjaxManager.abortGroup('trailer_' + activityId);
                 if (activeTrailers[activityId]) { activeTrailers[activityId].destroy(); delete activeTrailers[activityId]; }
@@ -901,8 +909,7 @@
             Object.keys(activeTrailers).forEach(function(id) { activeTrailers[id].destroy(); });
         });
 
-        log('Плагин инициализирован (DEBUG MODE)');
-        Diagnostics.log('PLUGIN_READY', 'Plugin initialized', { version: PLUGIN_VERSION });
+        Diag.add('INIT', 'Plugin ready!');
     }
 
     if (window.appready) startPlugin();
