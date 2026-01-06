@@ -3,13 +3,14 @@
 
     /**
      * Cardify Free Plugin
-     * @version 1.7.0
+     * @version 1.8.0
      * 
      * Changelog:
-     * 1.7.0 - Rutube трейлеры, исправлен логотип
+     * 1.8.0 - Исправлен autoplay Rutube через postMessage
+     * 1.7.0 - Rutube трейлеры
      * 1.3.0 - Базовая рабочая версия
      */
-    var PLUGIN_VERSION = '1.7.0';
+    var PLUGIN_VERSION = '1.8.0';
 
     var DEBUG = true;
     
@@ -35,11 +36,9 @@
         function search(movie, isTv, callback) {
             var title = movie.title || movie.name || movie.original_title || movie.original_name || '';
             
-            log('Rutube: начинаем поиск');
-            log('Rutube: название =', title);
+            log('Rutube: поиск:', title);
             
             if (!title || title.length < 2) {
-                log('Rutube: слишком короткое название');
                 callback(null);
                 return;
             }
@@ -47,23 +46,12 @@
             var year = (movie.release_date || movie.first_air_date || '').substring(0, 4);
             var cleanSearch = cleanString(title);
             var query = cleanString([title, year, 'русский трейлер', isTv ? 'сезон 1' : ''].join(' '));
-            
-            log('Rutube: год =', year);
-            log('Rutube: запрос =', query);
 
-            // Кэш
             var cacheKey = 'cardify_rutube_' + movie.id;
             var cached = sessionStorage.getItem(cacheKey);
             if (cached) {
-                log('Rutube: найден кэш');
                 var data = JSON.parse(cached);
-                if (data && data.videoId) {
-                    log('Rutube: из кэша videoId =', data.videoId);
-                    callback(data);
-                } else {
-                    log('Rutube: в кэше пусто');
-                    callback(null);
-                }
+                callback(data && data.videoId ? data : null);
                 return;
             }
 
@@ -71,36 +59,28 @@
             if (tmdbId.length > 7) tmdbId = tmdbId.slice(-Math.max(7, (movie.id + '').length));
             var type = isTv ? 'tv' : 'movie';
 
-            // Сначала пробуем trailer.rootu.top
             if (tmdbId && /^\d+$/.test(tmdbId)) {
                 var rootuUrl = rootuTrailerApi + type + '/' + tmdbId + '.json';
-                log('Rutube: пробуем rootu.top:', rootuUrl);
+                log('Rutube: rootu.top:', rootuUrl);
 
                 $.ajax({
                     url: rootuUrl,
                     dataType: 'json',
                     timeout: 3000,
                     success: function(data) {
-                        log('Rutube: rootu.top ответ:', data);
                         if (data && data.length && data[0].url) {
                             var videoId = extractVideoId(data[0].url);
                             if (videoId) {
-                                var result = {
-                                    title: data[0].title,
-                                    videoId: videoId,
-                                    thumbnail: data[0].thumbnail_url
-                                };
-                                log('Rutube: rootu.top найден videoId =', videoId);
+                                var result = { title: data[0].title, videoId: videoId, thumbnail: data[0].thumbnail_url };
+                                log('Rutube: найден videoId =', videoId);
                                 sessionStorage.setItem(cacheKey, JSON.stringify(result));
                                 callback(result);
                                 return;
                             }
                         }
-                        log('Rutube: rootu.top пусто, идём в Rutube API');
                         searchRutubeApi(query, cleanSearch, year, cacheKey, callback);
                     },
                     error: function() {
-                        log('Rutube: rootu.top ошибка, идём в Rutube API');
                         searchRutubeApi(query, cleanSearch, year, cacheKey, callback);
                     }
                 });
@@ -117,100 +97,48 @@
         function searchRutubeApi(query, cleanSearch, year, cacheKey, callback) {
             var url = (proxy || '') + 'https://rutube.ru/api/search/video/?query=' + 
                 encodeURIComponent(query) + '&format=json';
-            
-            log('Rutube: API запрос:', url);
 
             $.ajax({
                 url: url,
                 dataType: 'json',
                 timeout: 10000,
                 success: function(data) {
-                    log('Rutube: API ответ, results:', data?.results?.length);
-                    
                     if (!data || !data.results || !data.results.length) {
-                        log('Rutube: результатов нет');
                         sessionStorage.setItem(cacheKey, JSON.stringify({ videoId: null }));
                         callback(null);
                         return;
                     }
 
-                    var queryWords = query.split(' ');
-                    
-                    // Ищем подходящий трейлер
                     var found = null;
                     for (var i = 0; i < data.results.length; i++) {
                         var r = data.results[i];
                         var rTitle = cleanString(r.title || '');
                         
-                        log('Rutube: [' + i + '] title =', r.title);
-                        log('Rutube: [' + i + '] embed_url =', r.embed_url ? 'есть' : 'нет');
-                        log('Rutube: [' + i + '] duration =', r.duration);
+                        if (!r.embed_url) continue;
                         
-                        if (!r.embed_url) {
-                            log('Rutube: [' + i + '] пропуск - нет embed_url');
-                            continue;
-                        }
-                        
-                        // Проверяем что это трейлер
-                        var isTrailer = rTitle.indexOf('трейлер') >= 0 || 
-                                       rTitle.indexOf('trailer') >= 0 || 
-                                       rTitle.indexOf('тизер') >= 0 ||
-                                       rTitle.indexOf('тайзер') >= 0;
-                        if (!isTrailer) {
-                            log('Rutube: [' + i + '] пропуск - не трейлер');
-                            continue;
-                        }
-                        
-                        // Проверяем длительность (< 5 минут)
-                        if (r.duration && r.duration > 300) {
-                            log('Rutube: [' + i + '] пропуск - слишком длинный');
-                            continue;
-                        }
-                        
-                        // Проверяем что название содержит искомое
-                        if (rTitle.indexOf(cleanSearch) < 0) {
-                            log('Rutube: [' + i + '] пропуск - не содержит название фильма');
-                            continue;
-                        }
-                        
-                        // Проверяем флаги
-                        if (r.is_hidden || r.is_deleted || r.is_locked || r.is_adult) {
-                            log('Rutube: [' + i + '] пропуск - скрыт/удалён/заблокирован');
-                            continue;
-                        }
+                        var isTrailer = rTitle.indexOf('трейлер') >= 0 || rTitle.indexOf('trailer') >= 0 || 
+                                       rTitle.indexOf('тизер') >= 0 || rTitle.indexOf('тайзер') >= 0;
+                        if (!isTrailer) continue;
+                        if (r.duration && r.duration > 300) continue;
+                        if (rTitle.indexOf(cleanSearch) < 0) continue;
+                        if (r.is_hidden || r.is_deleted || r.is_locked || r.is_adult) continue;
                         
                         var videoId = extractVideoId(r.embed_url || r.video_url);
                         if (videoId) {
-                            found = {
-                                title: r.title,
-                                videoId: videoId,
-                                thumbnail: r.thumbnail_url
-                            };
-                            log('Rutube: [' + i + '] ВЫБРАН! videoId =', videoId);
+                            found = { title: r.title, videoId: videoId, thumbnail: r.thumbnail_url };
                             break;
                         }
                     }
 
-                    if (found) {
-                        sessionStorage.setItem(cacheKey, JSON.stringify(found));
-                        callback(found);
-                    } else {
-                        log('Rutube: подходящий трейлер не найден');
-                        sessionStorage.setItem(cacheKey, JSON.stringify({ videoId: null }));
-                        callback(null);
-                    }
+                    sessionStorage.setItem(cacheKey, JSON.stringify(found || { videoId: null }));
+                    callback(found);
                 },
-                error: function(xhr, status, error) {
-                    log('Rutube: API ошибка:', status, error);
-                    
-                    // Пробуем прокси
+                error: function(xhr) {
                     if (!proxy && xhr.status === 0) {
                         proxy = 'https://rutube-search.root-1a7.workers.dev/';
-                        log('Rutube: пробуем через прокси');
                         searchRutubeApi(query, cleanSearch, year, cacheKey, callback);
                         return;
                     }
-                    
                     sessionStorage.setItem(cacheKey, JSON.stringify({ videoId: null }));
                     callback(null);
                 }
@@ -220,25 +148,22 @@
         return { search: search };
     })();
 
-    // ==================== BACKGROUND TRAILER (iframe) ====================
+    // ==================== BACKGROUND TRAILER ====================
     var BackgroundTrailer = function(render, video, onDestroy) {
         var self = this;
         this.destroyed = false;
+        this.ready = false;
         
-        log('BackgroundTrailer: создаём');
-        log('BackgroundTrailer: videoId =', video.videoId);
+        log('BackgroundTrailer: создаём, videoId =', video.videoId);
         
         this.background = render.find('.full-start__background');
         
-        // Создаём iframe для Rutube
-        var embedUrl = 'https://rutube.ru/play/embed/' + video.videoId + 
-            '?skinColor=000000&autoplay=1&muted=1&loop=1&controls=0';
-        
-        log('BackgroundTrailer: embedUrl =', embedUrl);
+        var embedUrl = 'https://rutube.ru/play/embed/' + video.videoId;
         
         this.html = $('\
             <div class="cardify-bg-video">\
                 <iframe class="cardify-bg-video__player" \
+                    id="cardify-rutube-' + video.videoId.substring(0, 8) + '" \
                     src="' + embedUrl + '" \
                     frameborder="0" \
                     allow="autoplay; encrypted-media" \
@@ -247,28 +172,85 @@
             </div>\
         ');
         
-        // Вставляем после фона
+        this.iframe = this.html.find('iframe')[0];
+        
+        // Вставляем
         this.background.after(this.html);
         
-        // Показываем с задержкой (даём время загрузиться)
-        setTimeout(function() {
+        // Слушаем сообщения от Rutube iframe
+        this.messageHandler = function(e) {
             if (self.destroyed) return;
-            log('BackgroundTrailer: показываем');
-            self.html.addClass('cardify-bg-video--visible');
-            self.background.addClass('cardify-bg-hidden');
-        }, 2000);
+            if (!self.iframe || e.source !== self.iframe.contentWindow) return;
+            if (typeof e.data !== 'string') return;
+            
+            try {
+                var message = JSON.parse(e.data);
+                log('Rutube event:', message.type);
+                
+                switch(message.type) {
+                    case 'player:ready':
+                        log('BackgroundTrailer: player:ready - запускаем воспроизведение');
+                        self.ready = true;
+                        self.sendCommand({ type: 'player:play', data: {} });
+                        self.sendCommand({ type: 'player:setVolume', data: { volume: 0 } });
+                        self.sendCommand({ type: 'player:hideControls', data: {} });
+                        break;
+                        
+                    case 'player:changeState':
+                        if (message.data && message.data.state === 'playing') {
+                            log('BackgroundTrailer: playing - показываем видео');
+                            self.html.addClass('cardify-bg-video--visible');
+                            self.background.addClass('cardify-bg-hidden');
+                        }
+                        break;
+                        
+                    case 'player:playComplete':
+                        log('BackgroundTrailer: завершено - перезапускаем');
+                        self.sendCommand({ type: 'player:setCurrentTime', data: { time: 0 } });
+                        self.sendCommand({ type: 'player:play', data: {} });
+                        break;
+                        
+                    case 'player:adStart':
+                        log('BackgroundTrailer: реклама - скрываем');
+                        self.html.removeClass('cardify-bg-video--visible');
+                        self.background.removeClass('cardify-bg-hidden');
+                        break;
+                        
+                    case 'player:adEnd':
+                        log('BackgroundTrailer: реклама закончилась');
+                        self.html.addClass('cardify-bg-video--visible');
+                        self.background.addClass('cardify-bg-hidden');
+                        break;
+                        
+                    case 'player:error':
+                        log('BackgroundTrailer: ошибка плеера');
+                        self.destroy();
+                        break;
+                }
+            } catch(err) {}
+        };
+        
+        window.addEventListener('message', this.messageHandler);
+        
+        this.sendCommand = function(command) {
+            if (!this.ready || !this.iframe) return;
+            try {
+                this.iframe.contentWindow.postMessage(JSON.stringify(command), '*');
+            } catch(e) {}
+        };
         
         this.destroy = function() {
             if (this.destroyed) return;
             log('BackgroundTrailer: уничтожаем');
             this.destroyed = true;
+            window.removeEventListener('message', this.messageHandler);
             this.background.removeClass('cardify-bg-hidden');
             this.html.remove();
             if (typeof onDestroy === 'function') onDestroy();
         };
     };
 
-    // ==================== МОДУЛЬ ОРИГИНАЛЬНОГО НАЗВАНИЯ ====================
+    // ==================== ORIGINAL TITLE ====================
     var OriginalTitle = (function() {
         var storageKey = "cardify_title_cache";
         var CACHE_TTL = 30 * 24 * 60 * 60 * 1000;
@@ -290,11 +272,8 @@
             var orig = card.original_title || card.original_name || '';
             var alt = card.alternative_titles?.titles || card.alternative_titles?.results || [];
 
-            var translitObj = alt.find(function(t) {
-                return t.type === "Transliteration" || t.type === "romaji";
-            });
+            var translitObj = alt.find(function(t) { return t.type === "Transliteration" || t.type === "romaji"; });
             var translit = translitObj?.title || translitObj?.data?.title || translitObj?.data?.name || "";
-
             var ru = alt.find(function(t) { return t.iso_3166_1 === "RU"; })?.title;
             var en = alt.find(function(t) { return t.iso_3166_1 === "US"; })?.title;
 
@@ -311,31 +290,19 @@
                 try {
                     var type = card.first_air_date ? "tv" : "movie";
                     var data = await new Promise(function(res, rej) {
-                        Lampa.Api.sources.tmdb.get(
-                            type + "/" + card.id + "?append_to_response=translations",
-                            {}, res, rej
-                        );
+                        Lampa.Api.sources.tmdb.get(type + "/" + card.id + "?append_to_response=translations", {}, res, rej);
                     });
                     
                     var tr = data.translations?.translations || [];
-
-                    var translitData = tr.find(function(t) {
-                        return t.type === "Transliteration" || t.type === "romaji";
-                    });
-                    
+                    var translitData = tr.find(function(t) { return t.type === "Transliteration" || t.type === "romaji"; });
                     translit = translitData?.title || translitData?.data?.title || translitData?.data?.name || translit;
                     
                     if (!ru) {
-                        var ruData = tr.find(function(t) { 
-                            return t.iso_3166_1 === "RU" || t.iso_639_1 === "ru"; 
-                        });
+                        var ruData = tr.find(function(t) { return t.iso_3166_1 === "RU" || t.iso_639_1 === "ru"; });
                         ru = ruData?.data?.title || ruData?.data?.name;
                     }
-                    
                     if (!en) {
-                        var enData = tr.find(function(t) { 
-                            return t.iso_3166_1 === "US" || t.iso_639_1 === "en"; 
-                        });
+                        var enData = tr.find(function(t) { return t.iso_3166_1 === "US" || t.iso_639_1 === "en"; });
                         en = enData?.data?.title || enData?.data?.name;
                     }
 
@@ -357,9 +324,7 @@
             if (titles.translit && titles.translit !== titles.original && titles.translit !== titles.en) {
                 items.push({ title: titles.translit, label: 'Translit' });
             }
-            if (titles.en && lang !== 'en' && titles.en !== titles.original) {
-                items.push({ title: titles.en, label: 'EN' });
-            }
+            if (titles.en && lang !== 'en' && titles.en !== titles.original) items.push({ title: titles.en, label: 'EN' });
             if (titles.ru && lang !== 'ru') items.push({ title: titles.ru, label: 'RU' });
 
             if (!items.length) return;
@@ -388,22 +353,17 @@
         OriginalTitle.init();
 
         Lampa.Lang.add({
-            cardify_enable_trailer: {
-                ru: 'Фоновый трейлер (Rutube)', en: 'Background trailer (Rutube)', uk: 'Фоновий трейлер (Rutube)'
-            },
-            cardify_show_original_title: {
-                ru: 'Оригинальное название', en: 'Original title', uk: 'Оригінальна назва'
-            }
+            cardify_enable_sound: { ru: 'Включить звук', en: 'Enable sound', uk: 'Увімкнути звук' },
+            cardify_enable_trailer: { ru: 'Фоновый трейлер', en: 'Background trailer', uk: 'Фоновий трейлер' },
+            cardify_show_original_title: { ru: 'Оригинальное название', en: 'Original title', uk: 'Оригінальна назва' }
         });
 
-        // ШАБЛОН КАРТОЧКИ
+        // ШАБЛОН (как в 1.3.0)
         Lampa.Template.add('full_start_new', '\
 <div class="full-start-new cardify">\
     <div class="full-start-new__body">\
         <div class="full-start-new__left hide">\
-            <div class="full-start-new__poster">\
-                <img class="full-start-new__img full--poster" />\
-            </div>\
+            <div class="full-start-new__poster"><img class="full-start-new__img full--poster" /></div>\
         </div>\
         <div class="full-start-new__right">\
             <div class="cardify__left">\
@@ -411,116 +371,55 @@
                 <div class="full-start-new__title">{title}</div>\
                 <div class="full-start-new__details"></div>\
                 <div class="full-start-new__buttons">\
-                    <div class="full-start__button selector button--play">\
-                        <svg width="28" height="29" viewBox="0 0 28 29" fill="none" xmlns="http://www.w3.org/2000/svg">\
-                            <circle cx="14" cy="14.5" r="13" stroke="currentColor" stroke-width="2.7"/>\
-                            <path d="M18.0739 13.634C18.7406 14.0189 18.7406 14.9811 18.0739 15.366L11.751 19.0166C11.0843 19.4015 10.251 18.9204 10.251 18.1506L10.251 10.8494C10.251 10.0796 11.0843 9.5985 11.751 9.9834L18.0739 13.634Z" fill="currentColor"/>\
-                        </svg>\
-                        <span>#{title_watch}</span>\
-                    </div>\
-                    <div class="full-start__button selector button--book">\
-                        <svg width="21" height="32" viewBox="0 0 21 32" fill="none" xmlns="http://www.w3.org/2000/svg">\
-                            <path d="M2 1.5H19C19.2761 1.5 19.5 1.72386 19.5 2V27.9618C19.5 28.3756 19.0261 28.6103 18.697 28.3595L12.6212 23.7303C11.3682 22.7757 9.63183 22.7757 8.37885 23.7303L2.30302 28.3595C1.9739 28.6103 1.5 28.3756 1.5 27.9618V2C1.5 1.72386 1.72386 1.5 2 1.5Z" stroke="currentColor" stroke-width="2.5"/>\
-                        </svg>\
-                        <span>#{settings_input_links}</span>\
-                    </div>\
-                    <div class="full-start__button selector button--reaction">\
-                        <svg width="38" height="34" viewBox="0 0 38 34" fill="none" xmlns="http://www.w3.org/2000/svg">\
-                            <path d="M37.208 10.97L12.07 0.11C11.72-0.04 11.32-0.04 10.97 0.11C10.63 0.25 10.35 0.53 10.2 0.88L0.11 25.25C0.04 25.42 0 25.61 0 25.8C0 25.98 0.04 26.17 0.11 26.34C0.18 26.51 0.29 26.67 0.42 26.8C0.55 26.94 0.71 27.04 0.88 27.11L17.25 33.89C17.59 34.04 17.99 34.04 18.34 33.89L29.66 29.2C29.83 29.13 29.99 29.03 30.12 28.89C30.25 28.76 30.36 28.6 30.43 28.43L37.21 12.07C37.28 11.89 37.32 11.71 37.32 11.52C37.32 11.33 37.28 11.15 37.21 10.97ZM20.43 29.94L21.88 26.43L25.39 27.89L20.43 29.94ZM28.34 26.02L21.65 23.25C21.3 23.11 20.91 23.11 20.56 23.25C20.21 23.4 19.93 23.67 19.79 24.02L17.02 30.71L3.29 25.02L12.29 3.29L34.03 12.29L28.34 26.02Z" fill="currentColor"/>\
-                            <path d="M25.35 16.98L24.26 14.34L16.96 17.37L15.72 14.38L13.09 15.47L15.42 21.09L25.35 16.98Z" fill="currentColor"/>\
-                        </svg>\
-                        <span>#{title_reactions}</span>\
-                    </div>\
+                    <div class="full-start__button selector button--play"><svg width="28" height="29" viewBox="0 0 28 29" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="14" cy="14.5" r="13" stroke="currentColor" stroke-width="2.7"/><path d="M18.0739 13.634C18.7406 14.0189 18.7406 14.9811 18.0739 15.366L11.751 19.0166C11.0843 19.4015 10.251 18.9204 10.251 18.1506L10.251 10.8494C10.251 10.0796 11.0843 9.5985 11.751 9.9834L18.0739 13.634Z" fill="currentColor"/></svg><span>#{title_watch}</span></div>\
+                    <div class="full-start__button selector button--book"><svg width="21" height="32" viewBox="0 0 21 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 1.5H19C19.2761 1.5 19.5 1.72386 19.5 2V27.9618C19.5 28.3756 19.0261 28.6103 18.697 28.3595L12.6212 23.7303C11.3682 22.7757 9.63183 22.7757 8.37885 23.7303L2.30302 28.3595C1.9739 28.6103 1.5 28.3756 1.5 27.9618V2C1.5 1.72386 1.72386 1.5 2 1.5Z" stroke="currentColor" stroke-width="2.5"/></svg><span>#{settings_input_links}</span></div>\
+                    <div class="full-start__button selector button--reaction"><svg width="38" height="34" viewBox="0 0 38 34" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M37.208 10.97L12.07 0.11C11.72-0.04 11.32-0.04 10.97 0.11C10.63 0.25 10.35 0.53 10.2 0.88L0.11 25.25C0.04 25.42 0 25.61 0 25.8C0 25.98 0.04 26.17 0.11 26.34C0.18 26.51 0.29 26.67 0.42 26.8C0.55 26.94 0.71 27.04 0.88 27.11L17.25 33.89C17.59 34.04 17.99 34.04 18.34 33.89L29.66 29.2C29.83 29.13 29.99 29.03 30.12 28.89C30.25 28.76 30.36 28.6 30.43 28.43L37.21 12.07C37.28 11.89 37.32 11.71 37.32 11.52C37.32 11.33 37.28 11.15 37.21 10.97ZM20.43 29.94L21.88 26.43L25.39 27.89L20.43 29.94ZM28.34 26.02L21.65 23.25C21.3 23.11 20.91 23.11 20.56 23.25C20.21 23.4 19.93 23.67 19.79 24.02L17.02 30.71L3.29 25.02L12.29 3.29L34.03 12.29L28.34 26.02Z" fill="currentColor"/><path d="M25.35 16.98L24.26 14.34L16.96 17.37L15.72 14.38L13.09 15.47L15.42 21.09L25.35 16.98Z" fill="currentColor"/></svg><span>#{title_reactions}</span></div>\
                     <div class="full-start__button selector button--subscribe hide"></div>\
-                    <div class="full-start__button selector button--options">\
-                        <svg width="38" height="10" viewBox="0 0 38 10" fill="none" xmlns="http://www.w3.org/2000/svg">\
-                            <circle cx="4.89" cy="4.99" r="4.75" fill="currentColor"/>\
-                            <circle cx="18.97" cy="4.99" r="4.75" fill="currentColor"/>\
-                            <circle cx="33.06" cy="4.99" r="4.75" fill="currentColor"/>\
-                        </svg>\
-                    </div>\
+                    <div class="full-start__button selector button--options"><svg width="38" height="10" viewBox="0 0 38 10" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="4.89" cy="4.99" r="4.75" fill="currentColor"/><circle cx="18.97" cy="4.99" r="4.75" fill="currentColor"/><circle cx="33.06" cy="4.99" r="4.75" fill="currentColor"/></svg></div>\
                 </div>\
             </div>\
             <div class="cardify__right">\
                 <div class="full-start-new__reactions selector"><div>#{reactions_none}</div></div>\
-                <div class="full-start-new__rate-line">\
-                    <div class="full-start__pg hide"></div>\
-                    <div class="full-start__status hide"></div>\
-                </div>\
+                <div class="full-start-new__rate-line"><div class="full-start__pg hide"></div><div class="full-start__status hide"></div></div>\
             </div>\
         </div>\
     </div>\
-    <div class="hide buttons--container">\
-        <div class="full-start__button view--torrent hide"></div>\
-        <div class="full-start__button selector view--trailer"></div>\
-    </div>\
+    <div class="hide buttons--container"><div class="full-start__button view--torrent hide"></div><div class="full-start__button selector view--trailer"></div></div>\
 </div>');
 
-        // CSS
+        // CSS (как в 1.3.0 + видео фон)
         var style = $('<style id="cardify-css">\
             .cardify{transition:all .3s}\
             .cardify .full-start-new__body{height:80vh}\
             .cardify .full-start-new__right{display:flex;align-items:flex-end}\
             .cardify .full-start-new__head{margin-bottom:0.3em}\
-            .cardify .full-start-new__title{\
-                text-shadow:0 2px 10px rgba(0,0,0,0.5);\
-                font-size:5em !important;\
-                line-height:1.1 !important;\
-                margin-bottom:0.15em\
-            }\
-            .cardify .full-start-new__details{\
-                margin-bottom:0.5em;\
-                font-size:1.3em;\
-                opacity:0.7\
-            }\
+            .cardify .full-start-new__title{text-shadow:0 0 .1em rgba(0,0,0,0.3);font-size:5em !important;line-height:1.1 !important;margin-bottom:0.15em}\
+            .cardify .full-start-new__title img,.cardify .full-start-new__head img,.cardify img.full--logo,.cardify .full-start__title-img{max-height:24em !important;max-width:90% !important;height:auto !important;width:auto !important;object-fit:contain !important}\
+            .cardify .full-start-new__details{margin-bottom:0.5em;font-size:1.3em;opacity:0.7}\
             .cardify__left{flex-grow:1;max-width:70%}\
             .cardify__right{display:flex;align-items:center;flex-shrink:0;position:relative}\
             .cardify .full-start-new__reactions{margin:0;margin-right:-2.8em}\
             .cardify .full-start-new__reactions:not(.focus){margin:0}\
             .cardify .full-start-new__reactions:not(.focus)>div:not(:first-child){display:none}\
             .cardify .full-start-new__rate-line{margin:0;margin-left:3.5em}\
-            \
             .cardify__background{left:0;transition:opacity 1s ease}\
+            .cardify__background.loaded:not(.dim){opacity:1}\
             .cardify__background.cardify-bg-hidden{opacity:0 !important}\
             body:not(.menu--open) .cardify__background{mask-image:linear-gradient(to bottom,white 50%,rgba(255,255,255,0) 100%)}\
-            \
-            .cardify-bg-video{\
-                position:absolute;\
-                top:-10%;left:0;right:0;bottom:-10%;\
-                z-index:0;\
-                opacity:0;\
-                transition:opacity 1.5s ease;\
-                overflow:hidden;\
-                pointer-events:none;\
-            }\
+            .cardify-bg-video{position:absolute;top:-20%;left:0;right:0;bottom:-20%;z-index:0;opacity:0;transition:opacity 1.5s ease;overflow:hidden;pointer-events:none}\
             .cardify-bg-video--visible{opacity:1}\
-            .cardify-bg-video__player{\
-                width:100%;\
-                height:100%;\
-                border:0;\
-                pointer-events:none;\
-            }\
-            .cardify-bg-video__overlay{\
-                position:absolute;\
-                top:0;left:0;right:0;bottom:0;\
-                background:linear-gradient(to top,rgba(0,0,0,0.95) 0%,rgba(0,0,0,0.4) 40%,rgba(0,0,0,0.3) 60%,rgba(0,0,0,0.5) 100%);\
-                pointer-events:none;\
-            }\
-            body:not(.menu--open) .cardify-bg-video{\
-                mask-image:linear-gradient(to bottom,white 50%,rgba(255,255,255,0) 100%);\
-            }\
-            \
+            .cardify-bg-video__player{width:100%;height:100%;border:0;pointer-events:none}\
+            .cardify-bg-video__overlay{position:absolute;top:0;left:0;right:0;bottom:0;background:linear-gradient(to top,rgba(0,0,0,0.95) 0%,rgba(0,0,0,0.4) 40%,rgba(0,0,0,0.3) 60%,rgba(0,0,0,0.5) 100%);pointer-events:none}\
+            body:not(.menu--open) .cardify-bg-video{mask-image:linear-gradient(to bottom,white 50%,rgba(255,255,255,0) 100%)}\
             .cardify-original-titles{margin-bottom:1em;display:flex;flex-direction:column;gap:0.3em}\
             .cardify-original-titles__item{display:flex;align-items:center;gap:0.8em;font-size:1.4em;opacity:0.85}\
             .cardify-original-titles__text{color:#fff;text-shadow:0 1px 3px rgba(0,0,0,0.5)}\
             .cardify-original-titles__label{font-size:0.7em;padding:0.2em 0.5em;background:rgba(255,255,255,0.15);border-radius:0.3em;text-transform:uppercase;letter-spacing:0.05em;opacity:0.7}\
-            \
             .cardify .original_title{display:none !important}\
         </style>');
         
         $('head').append(style);
 
-        // Настройки
         Lampa.SettingsApi.addComponent({
             component: 'cardify',
             icon: '<svg width="36" height="28" viewBox="0 0 36 28" fill="none"><rect x="1.5" y="1.5" width="33" height="25" rx="3.5" stroke="white" stroke-width="3"/></svg>',
@@ -541,43 +440,6 @@
 
         var activeTrailers = {};
 
-        // Функция для увеличения логотипа через JS
-        function enlargeLogo(render) {
-            setTimeout(function() {
-                var logoSelectors = [
-                    '.full-start-new__title img',
-                    '.full-start-new__head img', 
-                    '.full-start__title-img',
-                    'img.full--logo'
-                ];
-                
-                logoSelectors.forEach(function(selector) {
-                    var imgs = render.find(selector);
-                    if (imgs.length) {
-                        log('Увеличиваем логотип:', selector, imgs.length, 'шт');
-                        imgs.each(function() {
-                            $(this).css({
-                                'max-height': '18em',
-                                'min-height': '8em',
-                                'height': 'auto',
-                                'width': 'auto',
-                                'max-width': '85%',
-                                'object-fit': 'contain'
-                            });
-                        });
-                    }
-                });
-            }, 200);
-            
-            // Повторяем через секунду на случай если логотип загрузится позже
-            setTimeout(function() {
-                render.find('.full-start-new__title img, .full-start-new__head img').css({
-                    'max-height': '18em',
-                    'min-height': '8em'
-                });
-            }, 1000);
-        }
-
         Lampa.Listener.follow('full', function(e) {
             if (e.type == 'complite') {
                 log('=== Full complite ===');
@@ -587,9 +449,6 @@
                 
                 render.find('.full-start__background').addClass('cardify__background');
 
-                // Увеличиваем логотип
-                enlargeLogo(render);
-
                 // Оригинальные названия
                 if (Lampa.Storage.field('cardify_show_original_title') !== false && e.data.movie) {
                     OriginalTitle.fetch(e.data.movie).then(function(titles) {
@@ -597,15 +456,15 @@
                     });
                 }
 
-                // Фоновый трейлер Rutube
+                // Фоновый трейлер
                 if (Lampa.Storage.field('cardify_run_trailers') !== false && e.data.movie) {
-                    log('Трейлеры включены, ищем в Rutube...');
+                    log('Ищем трейлер в Rutube...');
                     
                     var isTv = !!(e.object.method && e.object.method === 'tv');
                     
                     RutubeTrailer.search(e.data.movie, isTv, function(video) {
                         if (video && video.videoId) {
-                            log('Трейлер найден, создаём BackgroundTrailer');
+                            log('Трейлер найден, запускаем');
                             
                             if (activeTrailers[activityId]) {
                                 activeTrailers[activityId].destroy();
@@ -615,7 +474,7 @@
                                 delete activeTrailers[activityId];
                             });
                         } else {
-                            log('Трейлер НЕ найден');
+                            log('Трейлер не найден');
                         }
                     });
                 }
