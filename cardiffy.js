@@ -1,7 +1,7 @@
 (function () {
     'use strict';
 
-    var PLUGIN_VERSION = '1.9.8'; // FIX: Возврат статусов, строгий стиль, огонек
+    var PLUGIN_VERSION = '1.9.9'; // TV FIX & CSS UPDATE
     var DEBUG = true;
     
     // ==================== HLS.JS LOADER ====================
@@ -141,7 +141,7 @@
         return { search: search };
     })();
 
-    // ==================== RATINGS RENDERER (UPDATED STYLE) ====================
+    // ==================== RATINGS RENDERER ====================
     var RatingsRenderer = {
         render: function(container, card) {
             container.find('.cardify-ratings-list').remove();
@@ -149,7 +149,6 @@
             var ratingsHtml = '<div class="cardify-ratings-list">';
             var hasRatings = false;
 
-            // Helper for HTML generation
             function item(name, value) {
                 return '<div class="cardify-rate-item"><span class="cardify-rate-icon">' + name + '</span><span class="cardify-rate-value">' + parseFloat(value).toFixed(1) + '</span></div>';
             }
@@ -174,11 +173,9 @@
                 ratingsHtml += item('IMDb', imdb);
             }
 
-            // REACTION (FIRE) - Показываем количество огней (лайков)
-            // Lampa CUB обычно хранит реакции в card.reactions
+            // REACTION (FIRE)
             var fireCount = 0;
             if (card.reactions) {
-                // Пытаемся найти ключи: '0' (обычно огонь), 'fire', 'like'
                 if (card.reactions['0']) fireCount = card.reactions['0'];
                 else if (card.reactions['fire']) fireCount = card.reactions['fire'];
                 else if (card.reactions['like']) fireCount = card.reactions['like'];
@@ -186,7 +183,6 @@
             
             if (fireCount > 0) {
                 hasRatings = true;
-                // Иконка огня (SVG)
                 var fireIcon = '<svg width="12" height="14" viewBox="0 0 12 14" fill="none" xmlns="http://www.w3.org/2000/svg" style="margin-right:0.3em; margin-bottom: 2px;"><path d="M6 0C6 0 0 2.91667 0 8.16667C0 11.3887 2.68629 14 6 14C9.31371 14 12 11.3887 12 8.16667C12 2.91667 6 0 6 0ZM6 12.25C4.39167 12.25 3.08333 10.9417 3.08333 9.33333C3.08333 8.35625 3.63417 7.48417 4.445 7.00583C4.24667 7.5075 4.39833 8.16667 4.83333 8.16667C5.26833 8.16667 5.625 7.72625 5.5125 7.2275C5.355 6.52458 5.7575 5.64958 6.4575 5.25C6.18333 6.125 6.78417 7 7.58333 7C7.9975 7 8.365 7.21875 8.58083 7.55417C8.79958 8.085 8.91667 8.68292 8.91667 9.33333C8.91667 10.9417 7.60833 12.25 6 12.25Z" fill="white"/></svg>';
                 ratingsHtml += '<div class="cardify-rate-item reaction">' + fireIcon + '<span class="cardify-rate-value">' + fireCount + '</span></div>';
             }
@@ -194,15 +190,8 @@
             ratingsHtml += '</div>';
 
             if (hasRatings) {
-                // Добавляем ПЕРЕД блоком статусов, чтобы они были в одной линии (flex)
-                // Но так как Lampa пересоздает структуру, просто добавляем в cardify__right
-                // CSS (order) или просто append решит порядок.
-                // Status (rate-line) обычно уже там.
-                
-                // Проверяем, есть ли статус (возраст/год)
                 var rateLine = container.find('.full-start-new__rate-line');
                 if (rateLine.length) {
-                    // Вставляем ДО статуса, чтобы рейтинги были левее
                     rateLine.before(ratingsHtml);
                 } else {
                     container.find('.cardify__right').append(ratingsHtml);
@@ -226,6 +215,10 @@
         ');
         
         this.videoElement = this.html.find('video')[0];
+        
+        // FOR TV: Explicitly set muted property
+        this.videoElement.muted = true;
+        
         this.background.after(this.html);
         
         // Smart Zoom
@@ -248,16 +241,30 @@
         
         this.loadStream = function(m3u8Url) {
             var video = this.videoElement;
+            
+            // TV FIX: Try Native HLS first and more aggressively
+            // Most TVs support this MIME type natively
             if (video.canPlayType('application/vnd.apple.mpegurl')) {
+                log('BackgroundTrailer: Native HLS detected');
                 video.src = m3u8Url;
                 this.setupVideoEvents();
-            } else if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+            } 
+            // Only use hls.js if native is definitely not supported
+            else if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+                log('BackgroundTrailer: Using hls.js');
                 this.hls = new Hls({ autoStartLoad: true, startLevel: -1 });
                 this.hls.loadSource(m3u8Url);
                 this.hls.attachMedia(video);
-                this.hls.on(Hls.Events.MANIFEST_PARSED, function() { video.play().catch(function(){}); });
+                this.hls.on(Hls.Events.MANIFEST_PARSED, function() { 
+                    var playPromise = video.play();
+                    if (playPromise !== undefined) {
+                        playPromise.catch(function(e) { log('Auto-play failed', e); });
+                    }
+                });
                 this.setupVideoEvents();
             } else {
+                // Last resort
+                log('BackgroundTrailer: Native fallback');
                 video.src = m3u8Url;
                 this.setupVideoEvents();
             }
@@ -270,6 +277,16 @@
             video.addEventListener('loadedmetadata', function() {
                 if (video.duration > 10) video.currentTime = 5;
                 self.updateScale();
+                
+                // FORCE PLAY ON TV
+                var playPromise = video.play();
+                if (playPromise !== undefined) {
+                    playPromise.catch(function(error) {
+                        log('BackgroundTrailer: Play failed, retrying muted', error);
+                        video.muted = true;
+                        video.play();
+                    });
+                }
             });
 
             video.addEventListener('playing', function() {
@@ -277,7 +294,9 @@
                 self.background.addClass('cardify-bg-hidden');
             });
             
-            video.play().catch(function(){});
+            video.addEventListener('error', function(e) {
+                log('BackgroundTrailer: Video Error', e);
+            });
         };
         
         this.destroy = function() {
@@ -370,10 +389,8 @@
             cardify_show_original_title: { ru: 'Оригинальное название', en: 'Original title', uk: 'Оригінальна назва' }
         });
 
-        // TEMPLATE: Includes reactions div (to prevent crash) BUT we hide it via CSS
         Lampa.Template.add('full_start_new', '<div class="full-start-new cardify"><div class="full-start-new__body"><div class="full-start-new__left hide"><div class="full-start-new__poster"><img class="full-start-new__img full--poster" /></div></div><div class="full-start-new__right"><div class="cardify__left"><div class="full-start-new__head"></div><div class="full-start-new__title">{title}</div><div class="full-start-new__details"></div><div class="full-start-new__buttons"><div class="full-start__button selector button--play"><svg width="28" height="29" viewBox="0 0 28 29" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="14" cy="14.5" r="13" stroke="currentColor" stroke-width="2.7"/><path d="M18.0739 13.634C18.7406 14.0189 18.7406 14.9811 18.0739 15.366L11.751 19.0166C11.0843 19.4015 10.251 18.9204 10.251 18.1506L10.251 10.8494C10.251 10.0796 11.0843 9.5985 11.751 9.9834L18.0739 13.634Z" fill="currentColor"/></svg><span>#{title_watch}</span></div><div class="full-start__button selector button--book"><svg width="21" height="32" viewBox="0 0 21 32" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2 1.5H19C19.2761 1.5 19.5 1.72386 19.5 2V27.9618C19.5 28.3756 19.0261 28.6103 18.697 28.3595L12.6212 23.7303C11.3682 22.7757 9.63183 22.7757 8.37885 23.7303L2.30302 28.3595C1.9739 28.6103 1.5 28.3756 1.5 27.9618V2C1.5 1.72386 1.72386 1.5 2 1.5Z" stroke="currentColor" stroke-width="2.5"/></svg><span>#{settings_input_links}</span></div><div class="full-start__button selector button--reaction"><svg width="38" height="34" viewBox="0 0 38 34" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M37.208 10.97L12.07 0.11C11.72-0.04 11.32-0.04 10.97 0.11C10.63 0.25 10.35 0.53 10.2 0.88L0.11 25.25C0.04 25.42 0 25.61 0 25.8C0 25.98 0.04 26.17 0.11 26.34C0.18 26.51 0.29 26.67 0.42 26.8C0.55 26.94 0.71 27.04 0.88 27.11L17.25 33.89C17.59 34.04 17.99 34.04 18.34 33.89L29.66 29.2C29.83 29.13 29.99 29.03 30.12 28.89C30.25 28.76 30.36 28.6 30.43 28.43L37.21 12.07C37.28 11.89 37.32 11.71 37.32 11.52C37.32 11.33 37.28 11.15 37.21 10.97ZM20.43 29.94L21.88 26.43L25.39 27.89L20.43 29.94ZM28.34 26.02L21.65 23.25C21.3 23.11 20.91 23.11 20.56 23.25C20.21 23.4 19.93 23.67 19.79 24.02L17.02 30.71L3.29 25.02L12.29 3.29L34.03 12.29L28.34 26.02Z" fill="currentColor"/></svg><span>#{title_reactions}</span></div><div class="full-start__button selector button--subscribe hide"></div><div class="full-start__button selector button--options"><svg width="38" height="10" viewBox="0 0 38 10" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="4.89" cy="4.99" r="4.75" fill="currentColor"/><circle cx="18.97" cy="4.99" r="4.75" fill="currentColor"/><circle cx="33.06" cy="4.99" r="4.75" fill="currentColor"/></svg></div></div></div><div class="cardify__right"><div class="full-start-new__reactions selector"><div>#{reactions_none}</div></div><div class="full-start-new__rate-line"><div class="full-start__pg hide"></div><div class="full-start__status hide"></div></div></div></div></div><div class="hide buttons--container"><div class="full-start__button view--torrent hide"></div><div class="full-start__button selector view--trailer"></div></div></div>');
 
-        // CSS Update
         var style = $('<style id="cardify-css">\
             .cardify .full-start-new__body{height:80vh}\
             .cardify .full-start-new__right{display:flex;align-items:flex-end}\
@@ -386,7 +403,6 @@
             .cardify__background{left:0;transition:opacity 1s ease}\
             .cardify__background.cardify-bg-hidden{opacity:0 !important}\
             \
-            /* HIDE DEFAULT REACTIONS, BUT KEEP RATE-LINE (AGE/STATUS) VISIBLE */\
             .cardify .full-start-new__reactions { display: none !important; }\
             .cardify .full-start-new__rate-line { margin: 0 0 0 1em; display: flex; align-items: center; }\
             \
@@ -407,18 +423,18 @@
                 pointer-events: none;\
             }\
             \
-            /* Ratings CSS (STRICT WHITE, INLINE) */\
+            /* Ratings CSS FIX: Thicker borders, larger padding */\
             .cardify-ratings-list { display: flex; gap: 0.8em; align-items: center; }\
             .cardify-rate-item {\
                 display: flex; flex-direction: row; align-items: center; gap: 0.4em;\
-                border: 1px solid rgba(255,255,255,0.4);\
-                border-radius: 0.3em; padding: 0.2em 0.6em;\
+                border: 2px solid rgba(255,255,255,0.5);\
+                border-radius: 6px; padding: 0.4em 0.8em;\
                 background: transparent;\
                 color: #fff;\
             }\
             .cardify-rate-icon { font-size: 0.9em; opacity: 0.8; font-weight: normal; margin: 0; }\
             .cardify-rate-value { font-size: 1.1em; font-weight: bold; color: #fff !important; }\
-            .cardify-rate-item.reaction { border-color: rgba(255,255,255,0.4); }\
+            .cardify-rate-item.reaction { border-color: rgba(255,255,255,0.5); }\
             \
             .cardify-original-titles{margin-bottom:1em;display:flex;flex-direction:column;gap:0.3em;position:relative;z-index:2}\
             .cardify-original-titles__item{display:flex;align-items:center;gap:0.8em;font-size:1.4em;opacity:0.9}\
@@ -440,7 +456,6 @@
                 var activityId = e.object.activity.id || Date.now();
                 render.find('.full-start__background').addClass('cardify__background');
 
-                // Render Ratings
                 if (e.data.movie) {
                     RatingsRenderer.render(render, e.data.movie);
                 }
