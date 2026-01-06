@@ -11,7 +11,7 @@
         }
     }
 
-    // Рабочие Invidious API с CORS
+    // Рабочие Invidious API
     var INVIDIOUS_INSTANCES = [
         'https://iv.ggtyler.dev',
         'https://invidious.nerdvpn.de', 
@@ -21,7 +21,6 @@
         'https://inv.nadeko.net'
     ];
 
-    // Простая машина состояний
     function State(object) {
         this.state = object.state;
         this.start = function () {
@@ -35,17 +34,20 @@
         };
     }
 
-    // Класс Player
+    // Класс Player - ПОЛНОСТЬЮ АСИНХРОННЫЙ
     var Player = function(object, video) {
         var self = this;
         
         this.paused = false;
         this.display = false;
         this.loaded = false;
+        this.loading = false;  // Флаг загрузки
+        this.destroyed = false; // Флаг уничтожения
         this.timer = null;
         this.listener = Lampa.Subscribe();
         this.videoId = video.id;
         this.videoTitle = video.title;
+        this.currentRequest = null;
         
         log('Player создан для видео:', video.id);
         
@@ -81,8 +83,10 @@
             this.statusElement.text(text);
         };
 
-        // Пробуем получить видео через Invidious API
+        // Пробуем получить видео - НЕ БЛОКИРУЕТ ИНТЕРФЕЙС
         this.tryGetVideo = function(instances, index, callback) {
+            if (self.destroyed) return;
+            
             if (index >= instances.length) {
                 log('Все инстансы недоступны');
                 callback(null);
@@ -92,19 +96,20 @@
             var instance = instances[index];
             var apiUrl = instance + '/api/v1/videos/' + self.videoId + '?fields=formatStreams,adaptiveFormats';
             
-            self.setStatus('Пробуем ' + (index + 1) + '/' + instances.length + '...');
+            self.setStatus('Проверка ' + (index + 1) + '/' + instances.length);
             log('Запрос:', apiUrl);
 
-            $.ajax({
+            self.currentRequest = $.ajax({
                 url: apiUrl,
-                timeout: 10000,
+                timeout: 8000, // Уменьшил timeout
                 dataType: 'json',
                 success: function(data) {
+                    if (self.destroyed) return;
+                    
                     log('Ответ от', instance);
                     
                     var videoUrl = null;
                     
-                    // Сначала ищем в formatStreams (со звуком)
                     if (data.formatStreams && data.formatStreams.length) {
                         var streams = data.formatStreams.sort(function(a, b) {
                             var qA = parseInt(a.qualityLabel) || 0;
@@ -112,7 +117,6 @@
                             return qB - qA;
                         });
                         
-                        // Берём 720p или ниже для скорости
                         for (var i = 0; i < streams.length; i++) {
                             var q = parseInt(streams[i].qualityLabel) || 0;
                             if (q <= 720 && streams[i].url) {
@@ -122,7 +126,7 @@
                             }
                         }
                         
-                        if (!videoUrl && streams[0].url) {
+                        if (!videoUrl && streams[0] && streams[0].url) {
                             videoUrl = streams[0].url;
                         }
                     }
@@ -135,25 +139,33 @@
                     }
                 },
                 error: function(xhr, status, error) {
+                    if (self.destroyed) return;
                     log('Ошибка', instance, status, error);
                     self.tryGetVideo(instances, index + 1, callback);
                 }
             });
         };
 
-        // Инициализация
+        // Инициализация - ПОЛНОСТЬЮ ФОНОВАЯ
         this.initVideo = function() {
+            if (self.loading || self.destroyed) return;
+            self.loading = true;
+            
             self.setStatus('Поиск трейлера...');
             
             self.tryGetVideo(INVIDIOUS_INSTANCES, 0, function(url) {
+                if (self.destroyed) return;
+                self.loading = false;
+                
                 if (url) {
                     log('Загружаем видео');
-                    self.setStatus('Загрузка видео...');
+                    self.setStatus('Загрузка...');
                     
                     self.videoElement.src = url;
                     self.videoElement.muted = true;
                     
                     $(self.videoElement).one('loadeddata canplay', function() {
+                        if (self.destroyed) return;
                         log('Видео готово');
                         self.loadingElement.hide();
                         self.loaded = true;
@@ -161,13 +173,14 @@
                     });
                     
                     $(self.videoElement).one('error', function(e) {
-                        log('Ошибка загрузки видео:', e);
+                        if (self.destroyed) return;
+                        log('Ошибка загрузки видео');
                         self.listener.send('error');
                     });
                     
                     self.videoElement.load();
                 } else {
-                    log('Не удалось получить ссылку на видео');
+                    log('Не удалось получить ссылку');
                     self.listener.send('error');
                 }
             });
@@ -175,16 +188,16 @@
 
         // События видео
         $(this.videoElement).on('playing', function() {
+            if (self.destroyed) return;
             log('Видео играет');
             self.paused = false;
             
             clearInterval(self.timer);
             self.timer = setInterval(function() {
-                if (!self.videoElement.duration) return;
+                if (!self.videoElement.duration || self.destroyed) return;
                 
                 var left = self.videoElement.duration - self.videoElement.currentTime;
                 
-                // Fade out за 5 секунд до конца
                 if (left <= 18) {
                     var vol = Math.max(0, (left - 13) / 5);
                     if (!self.videoElement.muted) {
@@ -204,19 +217,24 @@
         });
 
         $(this.videoElement).on('pause', function() {
+            if (self.destroyed) return;
             self.paused = true;
             clearInterval(self.timer);
             self.listener.send('paused');
         });
 
         $(this.videoElement).on('ended', function() {
+            if (self.destroyed) return;
             self.listener.send('ended');
         });
 
-        // Запуск
-        this.initVideo();
+        // ЗАПУСК ЗАГРУЗКИ ОТЛОЖЕН
+        setTimeout(function() {
+            self.initVideo();
+        }, 100);
 
         this.play = function() {
+            if (this.destroyed) return;
             log('play()');
             try { 
                 var p = this.videoElement.play();
@@ -225,10 +243,12 @@
         };
 
         this.pause = function() {
+            if (this.destroyed) return;
             try { this.videoElement.pause(); } catch (e) {}
         };
 
         this.unmute = function() {
+            if (this.destroyed) return;
             this.videoElement.muted = false;
             this.videoElement.volume = 1;
             this.html.find('.cardify-trailer__remote').remove();
@@ -236,12 +256,14 @@
         };
 
         this.show = function() {
+            if (this.destroyed) return;
             log('Показываем трейлер');
             this.html.addClass('display');
             this.display = true;
         };
 
         this.hide = function() {
+            if (this.destroyed) return;
             log('Скрываем трейлер');
             this.html.removeClass('display');
             this.display = false;
@@ -252,9 +274,18 @@
         };
 
         this.destroy = function() {
+            log('Уничтожаем плеер');
+            this.destroyed = true;
             this.loaded = false;
             this.display = false;
+            this.loading = false;
             clearInterval(this.timer);
+            
+            // Отменяем текущий запрос
+            if (this.currentRequest) {
+                try { this.currentRequest.abort(); } catch(e) {}
+            }
+            
             try { 
                 this.videoElement.pause();
                 this.videoElement.src = '';
@@ -263,7 +294,7 @@
         };
     };
 
-    // Класс Trailer
+    // Класс Trailer - НЕ БЛОКИРУЕТ ИНТЕРФЕЙС
     var Trailer = function(object, video) {
         var self = this;
         
@@ -274,6 +305,7 @@
         this.object = object;
         this.video = video;
         this.player = null;
+        this.destroyed = false;
         this.background = this.object.activity.render().find('.full-start__background');
         this.startblock = this.object.activity.render().find('.cardify');
         this.head = $('.head');
@@ -284,35 +316,46 @@
             state: 'start',
             transitions: {
                 start: function(state) {
+                    if (self.destroyed) return;
                     clearTimeout(self.timer_load);
+                    
                     if (self.player.display) {
                         state.dispath('play');
                     } else if (self.player.loaded) {
                         self.animate();
                         self.timer_load = setTimeout(function() {
-                            state.dispath('load');
+                            if (!self.destroyed) state.dispath('load');
                         }, self.timelauch);
                     }
+                    // Если не загружено - просто выходим, не блокируем
                 },
                 load: function(state) {
+                    if (self.destroyed) return;
                     if (self.player.loaded && Lampa.Controller.enabled().name == 'full_start' && self.same()) {
                         state.dispath('play');
                     }
                 },
                 play: function() {
+                    if (self.destroyed) return;
                     self.player.play();
                 },
                 toggle: function(state) {
+                    if (self.destroyed) return;
                     clearTimeout(self.timer_load);
+                    
                     if (Lampa.Controller.enabled().name == 'cardify_trailer') {
                         // nothing
                     } else if (Lampa.Controller.enabled().name == 'full_start' && self.same()) {
-                        state.start();
+                        // Только если уже загружено!
+                        if (self.player.loaded) {
+                            state.start();
+                        }
                     } else if (self.player.display) {
                         state.dispath('hide');
                     }
                 },
                 hide: function() {
+                    if (self.destroyed) return;
                     self.player.pause();
                     self.player.hide();
                     self.background.removeClass('nodisplay');
@@ -332,6 +375,10 @@
             var started = Date.now();
             clearInterval(this.timer_anim);
             this.timer_anim = setInterval(function() {
+                if (self.destroyed) {
+                    clearInterval(self.timer_anim);
+                    return;
+                }
                 var elapsed = Date.now() - started;
                 if (elapsed > self.timelauch) clearInterval(self.timer_anim);
                 loader.width(Math.round(elapsed / self.timelauch * 100) + '%');
@@ -339,6 +386,7 @@
         };
 
         this.preview = function() {
+            if (this.destroyed) return;
             var preview = $('\
                 <div class="cardify-preview">\
                     <div>\
@@ -355,6 +403,8 @@
         };
 
         this.controll = function() {
+            if (this.destroyed) return;
+            
             var out = function() {
                 self.state.dispath('hide');
                 Lampa.Controller.toggle('full_start');
@@ -378,7 +428,11 @@
         };
 
         this.start = function() {
-            var toggle = function() { self.state.dispath('toggle'); };
+            var self = this;
+            
+            var toggle = function() { 
+                if (!self.destroyed) self.state.dispath('toggle'); 
+            };
 
             var destroy = function(e) {
                 if (e.type == 'destroy' && e.object.activity === self.object.activity) {
@@ -398,12 +452,14 @@
             this.player = new Player(this.object, this.video);
 
             this.player.listener.follow('loaded', function() {
+                if (self.destroyed) return;
                 log('Player loaded');
                 self.preview();
                 self.state.start();
             });
 
             this.player.listener.follow('play', function() {
+                if (self.destroyed) return;
                 log('Player play');
                 clearTimeout(self.timer_show);
 
@@ -413,6 +469,7 @@
                 }
 
                 self.timer_show = setTimeout(function() {
+                    if (self.destroyed) return;
                     self.player.show();
                     self.background.addClass('nodisplay');
                     self.startblock.addClass('nodisplay');
@@ -422,10 +479,12 @@
             });
 
             this.player.listener.follow('ended,error', function() {
+                if (self.destroyed) return;
                 log('Player ended/error');
                 self.state.dispath('hide');
 
-                if (Lampa.Controller.enabled().name !== 'full_start') {
+                // Возвращаем управление
+                if (Lampa.Controller.enabled().name == 'cardify_trailer') {
                     Lampa.Controller.toggle('full_start');
                 }
 
@@ -434,10 +493,13 @@
             });
 
             this.object.activity.render().find('.activity__body').prepend(this.player.render());
-            this.state.start();
+            
+            // НЕ вызываем state.start() здесь - ждём события loaded
         };
 
         this.destroy = function() {
+            log('Уничтожаем Trailer');
+            this.destroyed = true;
             clearTimeout(this.timer_load);
             clearTimeout(this.timer_show);
             clearInterval(this.timer_anim);
@@ -450,7 +512,6 @@
     function startPlugin() {
         log('Запуск плагина');
 
-        // Переводы
         Lampa.Lang.add({
             cardify_enable_sound: {
                 ru: 'Включить звук',
@@ -464,19 +525,104 @@
             }
         });
 
-        // ШАБЛОН КАРТОЧКИ (из оригинала)
-        Lampa.Template.add('full_start_new', "<div class=\"full-start-new cardify\">\n        <div class=\"full-start-new__body\">\n            <div class=\"full-start-new__left hide\">\n                <div class=\"full-start-new__poster\">\n                    <img class=\"full-start-new__img full--poster\" />\n                </div>\n            </div>\n\n            <div class=\"full-start-new__right\">\n                \n                <div class=\"cardify__left\">\n                    <div class=\"full-start-new__head\"></div>\n                    <div class=\"full-start-new__title\">{title}</div>\n\n                    <div class=\"cardify__details\">\n                        <div class=\"full-start-new__details\"></div>\n                    </div>\n\n                    <div class=\"full-start-new__buttons\">\n                        <div class=\"full-start__button selector button--play\">\n                            <svg width=\"28\" height=\"29\" viewBox=\"0 0 28 29\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\n                                <circle cx=\"14\" cy=\"14.5\" r=\"13\" stroke=\"currentColor\" stroke-width=\"2.7\"/>\n                                <path d=\"M18.0739 13.634C18.7406 14.0189 18.7406 14.9811 18.0739 15.366L11.751 19.0166C11.0843 19.4015 10.251 18.9204 10.251 18.1506L10.251 10.8494C10.251 10.0796 11.0843 9.5985 11.751 9.9834L18.0739 13.634Z\" fill=\"currentColor\"/>\n                            </svg>\n\n                            <span>#{title_watch}</span>\n                        </div>\n\n                        <div class=\"full-start__button selector button--book\">\n                            <svg width=\"21\" height=\"32\" viewBox=\"0 0 21 32\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\n                            <path d=\"M2 1.5H19C19.2761 1.5 19.5 1.72386 19.5 2V27.9618C19.5 28.3756 19.0261 28.6103 18.697 28.3595L12.6212 23.7303C11.3682 22.7757 9.63183 22.7757 8.37885 23.7303L2.30302 28.3595C1.9739 28.6103 1.5 28.3756 1.5 27.9618V2C1.5 1.72386 1.72386 1.5 2 1.5Z\" stroke=\"currentColor\" stroke-width=\"2.5\"/>\n                            </svg>\n\n                            <span>#{settings_input_links}</span>\n                        </div>\n\n                        <div class=\"full-start__button selector button--reaction\">\n                            <svg width=\"38\" height=\"34\" viewBox=\"0 0 38 34\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\n                                <path d=\"M37.208 10.9742C37.1364 10.8013 37.0314 10.6441 36.899 10.5117C36.7666 10.3794 36.6095 10.2744 36.4365 10.2028L12.0658 0.108375C11.7166 -0.0361828 11.3242 -0.0361227 10.9749 0.108542C10.6257 0.253206 10.3482 0.530634 10.2034 0.879836L0.108666 25.2507C0.0369593 25.4236 3.37953e-05 25.609 2.3187e-08 25.7962C-3.37489e-05 25.9834 0.0368249 26.1688 0.108469 26.3418C0.180114 26.5147 0.28514 26.6719 0.417545 26.8042C0.54995 26.9366 0.707139 27.0416 0.880127 27.1131L17.2452 33.8917C17.5945 34.0361 17.9869 34.0361 18.3362 33.8917L29.6574 29.2017C29.8304 29.1301 29.9875 29.0251 30.1199 28.8928C30.2523 28.7604 30.3573 28.6032 30.4289 28.4303L37.2078 12.065C37.2795 11.8921 37.3164 11.7068 37.3164 11.5196C37.3165 11.3325 37.2796 11.1471 37.208 10.9742ZM20.425 29.9407L21.8784 26.4316L25.3873 27.885L20.425 29.9407ZM28.3407 26.0222L21.6524 23.252C21.3031 23.1075 20.9107 23.1076 20.5615 23.2523C20.2123 23.3969 19.9348 23.6743 19.79 24.0235L17.0194 30.7123L3.28783 25.0247L12.2918 3.28773L34.0286 12.2912L28.3407 26.0222Z\" fill=\"currentColor\"/>\n                                <path d=\"M25.3493 16.976L24.258 14.3423L16.959 17.3666L15.7196 14.375L13.0859 15.4659L15.4161 21.0916L25.3493 16.976Z\" fill=\"currentColor\"/>\n                            </svg>                \n\n                            <span>#{title_reactions}</span>\n                        </div>\n\n                        <div class=\"full-start__button selector button--subscribe hide\">\n                            <svg width=\"25\" height=\"30\" viewBox=\"0 0 25 30\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\n                            <path d=\"M6.01892 24C6.27423 27.3562 9.07836 30 12.5 30C15.9216 30 18.7257 27.3562 18.981 24H15.9645C15.7219 25.6961 14.2632 27 12.5 27C10.7367 27 9.27804 25.6961 9.03542 24H6.01892Z\" fill=\"currentColor\"/>\n                            <path d=\"M3.81972 14.5957V10.2679C3.81972 5.41336 7.7181 1.5 12.5 1.5C17.2819 1.5 21.1803 5.41336 21.1803 10.2679V14.5957C21.1803 15.8462 21.5399 17.0709 22.2168 18.1213L23.0727 19.4494C24.2077 21.2106 22.9392 23.5 20.9098 23.5H4.09021C2.06084 23.5 0.792282 21.2106 1.9273 19.4494L2.78317 18.1213C3.46012 17.0709 3.81972 15.8462 3.81972 14.5957Z\" stroke=\"currentColor\" stroke-width=\"2.5\"/>\n                            </svg>\n\n                            <span>#{title_subscribe}</span>\n                        </div>\n\n                        <div class=\"full-start__button selector button--options\">\n                            <svg width=\"38\" height=\"10\" viewBox=\"0 0 38 10\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\n                                <circle cx=\"4.88968\" cy=\"4.98563\" r=\"4.75394\" fill=\"currentColor\"/>\n                                <circle cx=\"18.9746\" cy=\"4.98563\" r=\"4.75394\" fill=\"currentColor\"/>\n                                <circle cx=\"33.0596\" cy=\"4.98563\" r=\"4.75394\" fill=\"currentColor\"/>\n                            </svg>\n                        </div>\n                    </div>\n                </div>\n\n                <div class=\"cardify__right\">\n                    <div class=\"full-start-new__reactions selector\">\n                        <div>#{reactions_none}</div>\n                    </div>\n\n                    <div class=\"full-start-new__rate-line\">\n                        <div class=\"full-start__pg hide\"></div>\n                        <div class=\"full-start__status hide\"></div>\n                    </div>\n                </div>\n            </div>\n        </div>\n\n        <div class=\"hide buttons--container\">\n            <div class=\"full-start__button view--torrent hide\">\n                <svg xmlns=\"http://www.w3.org/2000/svg\"  viewBox=\"0 0 50 50\" width=\"50px\" height=\"50px\">\n                    <path d=\"M25,2C12.317,2,2,12.317,2,25s10.317,23,23,23s23-10.317,23-23S37.683,2,25,2z M40.5,30.963c-3.1,0-4.9-2.4-4.9-2.4 S34.1,35,27,35c-1.4,0-3.6-0.837-3.6-0.837l4.17,9.643C26.727,43.92,25.874,44,25,44c-2.157,0-4.222-0.377-6.155-1.039L9.237,16.851 c0,0-0.7-1.2,0.4-1.5c1.1-0.3,5.4-1.2,5.4-1.2s1.475-0.494,1.8,0.5c0.5,1.3,4.063,11.112,4.063,11.112S22.6,29,27.4,29 c4.7,0,5.9-3.437,5.7-3.937c-1.2-3-4.993-11.862-4.993-11.862s-0.6-1.1,0.8-1.4c1.4-0.3,3.8-0.7,3.8-0.7s1.105-0.163,1.6,0.8 c0.738,1.437,5.193,11.262,5.193,11.262s1.1,2.9,3.3,2.9c0.464,0,0.834-0.046,1.152-0.104c-0.082,1.635-0.348,3.221-0.817,4.722 C42.541,30.867,41.756,30.963,40.5,30.963z\" fill=\"currentColor\"/>\n                </svg>\n\n                <span>#{full_torrents}</span>\n            </div>\n\n            <div class=\"full-start__button selector view--trailer\">\n                <svg height=\"70\" viewBox=\"0 0 80 70\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\n                    <path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M71.2555 2.08955C74.6975 3.2397 77.4083 6.62804 78.3283 10.9306C80 18.7291 80 35 80 35C80 35 80 51.2709 78.3283 59.0694C77.4083 63.372 74.6975 66.7603 71.2555 67.9104C65.0167 70 40 70 40 70C40 70 14.9833 70 8.74453 67.9104C5.3025 66.7603 2.59172 63.372 1.67172 59.0694C0 51.2709 0 35 0 35C0 35 0 18.7291 1.67172 10.9306C2.59172 6.62804 5.3025 3.2395 8.74453 2.08955C14.9833 0 40 0 40 0C40 0 65.0167 0 71.2555 2.08955ZM55.5909 35.0004L29.9773 49.5714V20.4286L55.5909 35.0004Z\" fill=\"currentColor\"></path>\n                </svg>\n\n                <span>#{full_trailers}</span>\n            </div>\n        </div>\n    </div>");
+        // ШАБЛОН С ГОДОМ И СТРАНОЙ ПОД ЛОГОТИПОМ
+        Lampa.Template.add('full_start_new', "\
+<div class=\"full-start-new cardify\">\
+    <div class=\"full-start-new__body\">\
+        <div class=\"full-start-new__left hide\">\
+            <div class=\"full-start-new__poster\">\
+                <img class=\"full-start-new__img full--poster\" />\
+            </div>\
+        </div>\
+        <div class=\"full-start-new__right\">\
+            <div class=\"cardify__left\">\
+                <div class=\"full-start-new__head\"></div>\
+                <div class=\"full-start-new__title\">{title}</div>\
+                <div class=\"full-start-new__details\"></div>\
+                <div class=\"full-start-new__buttons\">\
+                    <div class=\"full-start__button selector button--play\">\
+                        <svg width=\"28\" height=\"29\" viewBox=\"0 0 28 29\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\
+                            <circle cx=\"14\" cy=\"14.5\" r=\"13\" stroke=\"currentColor\" stroke-width=\"2.7\"/>\
+                            <path d=\"M18.0739 13.634C18.7406 14.0189 18.7406 14.9811 18.0739 15.366L11.751 19.0166C11.0843 19.4015 10.251 18.9204 10.251 18.1506L10.251 10.8494C10.251 10.0796 11.0843 9.5985 11.751 9.9834L18.0739 13.634Z\" fill=\"currentColor\"/>\
+                        </svg>\
+                        <span>#{title_watch}</span>\
+                    </div>\
+                    <div class=\"full-start__button selector button--book\">\
+                        <svg width=\"21\" height=\"32\" viewBox=\"0 0 21 32\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\
+                            <path d=\"M2 1.5H19C19.2761 1.5 19.5 1.72386 19.5 2V27.9618C19.5 28.3756 19.0261 28.6103 18.697 28.3595L12.6212 23.7303C11.3682 22.7757 9.63183 22.7757 8.37885 23.7303L2.30302 28.3595C1.9739 28.6103 1.5 28.3756 1.5 27.9618V2C1.5 1.72386 1.72386 1.5 2 1.5Z\" stroke=\"currentColor\" stroke-width=\"2.5\"/>\
+                        </svg>\
+                        <span>#{settings_input_links}</span>\
+                    </div>\
+                    <div class=\"full-start__button selector button--reaction\">\
+                        <svg width=\"38\" height=\"34\" viewBox=\"0 0 38 34\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\
+                            <path d=\"M37.208 10.97L12.07 0.11C11.72-0.04 11.32-0.04 10.97 0.11C10.63 0.25 10.35 0.53 10.2 0.88L0.11 25.25C0.04 25.42 0 25.61 0 25.8C0 25.98 0.04 26.17 0.11 26.34C0.18 26.51 0.29 26.67 0.42 26.8C0.55 26.94 0.71 27.04 0.88 27.11L17.25 33.89C17.59 34.04 17.99 34.04 18.34 33.89L29.66 29.2C29.83 29.13 29.99 29.03 30.12 28.89C30.25 28.76 30.36 28.6 30.43 28.43L37.21 12.07C37.28 11.89 37.32 11.71 37.32 11.52C37.32 11.33 37.28 11.15 37.21 10.97ZM20.43 29.94L21.88 26.43L25.39 27.89L20.43 29.94ZM28.34 26.02L21.65 23.25C21.3 23.11 20.91 23.11 20.56 23.25C20.21 23.4 19.93 23.67 19.79 24.02L17.02 30.71L3.29 25.02L12.29 3.29L34.03 12.29L28.34 26.02Z\" fill=\"currentColor\"/>\
+                            <path d=\"M25.35 16.98L24.26 14.34L16.96 17.37L15.72 14.38L13.09 15.47L15.42 21.09L25.35 16.98Z\" fill=\"currentColor\"/>\
+                        </svg>\
+                        <span>#{title_reactions}</span>\
+                    </div>\
+                    <div class=\"full-start__button selector button--subscribe hide\">\
+                        <svg width=\"25\" height=\"30\" viewBox=\"0 0 25 30\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\
+                            <path d=\"M6.02 24C6.27 27.36 9.08 30 12.5 30C15.92 30 18.73 27.36 18.98 24H15.96C15.72 25.7 14.26 27 12.5 27C10.74 27 9.28 25.7 9.04 24H6.02Z\" fill=\"currentColor\"/>\
+                            <path d=\"M3.82 14.6V10.27C3.82 5.41 7.72 1.5 12.5 1.5C17.28 1.5 21.18 5.41 21.18 10.27V14.6C21.18 15.85 21.54 17.07 22.22 18.12L23.07 19.45C24.21 21.21 22.94 23.5 20.91 23.5H4.09C2.06 23.5 0.79 21.21 1.93 19.45L2.78 18.12C3.46 17.07 3.82 15.85 3.82 14.6Z\" stroke=\"currentColor\" stroke-width=\"2.5\"/>\
+                        </svg>\
+                        <span>#{title_subscribe}</span>\
+                    </div>\
+                    <div class=\"full-start__button selector button--options\">\
+                        <svg width=\"38\" height=\"10\" viewBox=\"0 0 38 10\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\
+                            <circle cx=\"4.89\" cy=\"4.99\" r=\"4.75\" fill=\"currentColor\"/>\
+                            <circle cx=\"18.97\" cy=\"4.99\" r=\"4.75\" fill=\"currentColor\"/>\
+                            <circle cx=\"33.06\" cy=\"4.99\" r=\"4.75\" fill=\"currentColor\"/>\
+                        </svg>\
+                    </div>\
+                </div>\
+            </div>\
+            <div class=\"cardify__right\">\
+                <div class=\"full-start-new__reactions selector\">\
+                    <div>#{reactions_none}</div>\
+                </div>\
+                <div class=\"full-start-new__rate-line\">\
+                    <div class=\"full-start__pg hide\"></div>\
+                    <div class=\"full-start__status hide\"></div>\
+                </div>\
+            </div>\
+        </div>\
+    </div>\
+    <div class=\"hide buttons--container\">\
+        <div class=\"full-start__button view--torrent hide\">\
+            <svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 50 50\" width=\"50px\" height=\"50px\">\
+                <path d=\"M25,2C12.317,2,2,12.317,2,25s10.317,23,23,23s23-10.317,23-23S37.683,2,25,2z M40.5,30.963c-3.1,0-4.9-2.4-4.9-2.4 S34.1,35,27,35c-1.4,0-3.6-0.837-3.6-0.837l4.17,9.643C26.727,43.92,25.874,44,25,44c-2.157,0-4.222-0.377-6.155-1.039L9.237,16.851 c0,0-0.7-1.2,0.4-1.5c1.1-0.3,5.4-1.2,5.4-1.2s1.475-0.494,1.8,0.5c0.5,1.3,4.063,11.112,4.063,11.112S22.6,29,27.4,29 c4.7,0,5.9-3.437,5.7-3.937c-1.2-3-4.993-11.862-4.993-11.862s-0.6-1.1,0.8-1.4c1.4-0.3,3.8-0.7,3.8-0.7s1.105-0.163,1.6,0.8 c0.738,1.437,5.193,11.262,5.193,11.262s1.1,2.9,3.3,2.9c0.464,0,0.834-0.046,1.152-0.104c-0.082,1.635-0.348,3.221-0.817,4.722 C42.541,30.867,41.756,30.963,40.5,30.963z\" fill=\"currentColor\"/>\
+            </svg>\
+            <span>#{full_torrents}</span>\
+        </div>\
+        <div class=\"full-start__button selector view--trailer\">\
+            <svg height=\"70\" viewBox=\"0 0 80 70\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\
+                <path fill-rule=\"evenodd\" clip-rule=\"evenodd\" d=\"M71.26 2.09C74.7 3.24 77.41 6.63 78.33 10.93C80 18.73 80 35 80 35C80 35 80 51.27 78.33 59.07C77.41 63.37 74.7 66.76 71.26 67.91C65.02 70 40 70 40 70C40 70 14.98 70 8.74 67.91C5.3 66.76 2.59 63.37 1.67 59.07C0 51.27 0 35 0 35C0 35 0 18.73 1.67 10.93C2.59 6.63 5.3 3.24 8.74 2.09C14.98 0 40 0 40 0C40 0 65.02 0 71.26 2.09ZM55.59 35L29.98 49.57V20.43L55.59 35Z\" fill=\"currentColor\"/>\
+            </svg>\
+            <span>#{full_trailers}</span>\
+        </div>\
+    </div>\
+</div>");
 
-        // CSS СТИЛИ (из оригинала + увеличенный логотип)
+        // CSS СТИЛИ - ЛОГОТИП ЕЩЕ В 2 РАЗА БОЛЬШЕ (24em)
         var style = $('<style>\
             .cardify{transition:all .3s}\
             .cardify .full-start-new__body{height:80vh}\
             .cardify .full-start-new__right{display:flex;align-items:flex-end}\
-            .cardify .full-start-new__title{text-shadow:0 0 .1em rgba(0,0,0,0.3);font-size:4.5em !important;line-height:1.1 !important}\
-            .cardify .full-start-new__title img,.cardify .full-start-new__head img,.cardify img.full--logo{max-height:12em !important;max-width:80% !important;height:auto !important;width:auto !important;object-fit:contain !important}\
+            .cardify .full-start-new__head{margin-bottom:0.3em}\
+            .cardify .full-start-new__title{text-shadow:0 0 .1em rgba(0,0,0,0.3);font-size:5em !important;line-height:1.1 !important;margin-bottom:0.2em}\
+            .cardify .full-start-new__title img,\
+            .cardify .full-start-new__head img,\
+            .cardify img.full--logo,\
+            .cardify .full-start__title-img{\
+                max-height:24em !important;\
+                max-width:90% !important;\
+                height:auto !important;\
+                width:auto !important;\
+                object-fit:contain !important;\
+            }\
+            .cardify .full-start-new__details{margin-bottom:1em;font-size:1.2em;opacity:0.8}\
             .cardify__left{flex-grow:1}\
             .cardify__right{display:flex;align-items:center;flex-shrink:0;position:relative}\
-            .cardify__details{display:flex}\
             .cardify .full-start-new__reactions{margin:0;margin-right:-2.8em}\
             .cardify .full-start-new__reactions:not(.focus){margin:0}\
             .cardify .full-start-new__reactions:not(.focus)>div:not(:first-child){display:none}\
@@ -531,7 +677,6 @@
             }
         });
 
-        // Получение трейлера
         function getVideo(data) {
             if (!data.videos || !data.videos.results) return null;
             
@@ -557,7 +702,6 @@
             return myLang[0] || enLang[0] || items[0];
         }
 
-        // Слушаем событие
         Lampa.Listener.follow('full', function(e) {
             if (e.type == 'complite') {
                 log('Full complite');
@@ -588,7 +732,6 @@
         log('Плагин инициализирован');
     }
 
-    // Запуск
     if (window.appready) {
         startPlugin();
     } else {
